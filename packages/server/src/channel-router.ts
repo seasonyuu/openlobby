@@ -61,6 +61,9 @@ export class ChannelRouterImpl implements ChannelRouter {
   /** Per-identity stream buffer for think-tag typing */
   private streamStates = new Map<string, StreamState>();
 
+  /** Track message origin per session turn: 'web' or 'im' */
+  private messageOriginBySession = new Map<string, 'web' | 'im'>();
+
   constructor(
     private sessionManager: SessionManager,
     private lobbyManager: LobbyManager | null,
@@ -69,6 +72,11 @@ export class ChannelRouterImpl implements ChannelRouter {
     this.sessionManager.onMessage('channel-router', this.handleSessionMessage.bind(this));
     this.sessionManager.onSessionUpdate('channel-router', this.handleSessionUpdate.bind(this));
     this.sessionManager.onNavigate('channel-router', this.handleNavigate.bind(this));
+  }
+
+  /** Set the origin of the current turn for a session */
+  setMessageOrigin(sessionId: string, origin: 'web' | 'im'): void {
+    this.messageOriginBySession.set(sessionId, origin);
   }
 
   // ─── Provider Management ─────────────────────────────────────────
@@ -229,6 +237,7 @@ export class ChannelRouterImpl implements ChannelRouter {
 
     console.log(`[ChannelRouter] Routing to session ${sessionId}`);
     this.lastSenderBySession.set(sessionId, identityKey);
+    this.messageOriginBySession.set(sessionId, 'im');
 
     // Initialize think state immediately when user sends a message
     // This ensures typing indicator shows up right away
@@ -260,6 +269,27 @@ export class ChannelRouterImpl implements ChannelRouter {
   // ─── Session Message → IM (with stream buffer + markdown formatting) ──
 
   private handleSessionMessage(sessionId: string, msg: LobbyMessage): void {
+    const origin = this.messageOriginBySession.get(sessionId);
+
+    // Clean up origin tracking on turn completion
+    if (msg.type === 'result') {
+      this.messageOriginBySession.delete(sessionId);
+    }
+
+    // Source-aware routing: web-originated turns don't push to IM
+    // (web always receives messages via WebSocket broadcast)
+    // Control (approval) messages bypass this — they use special routing below
+    if (origin === 'web' && msg.type !== 'control') {
+      return;
+    }
+
+    // For control messages when origin is 'web': route approval to IM
+    // only if web is NOT currently viewing this session
+    if (msg.type === 'control' && origin === 'web') {
+      this.routeApprovalToIM(sessionId, msg);
+      return;
+    }
+
     const bindingRow = this.resolveResponseBinding(sessionId);
     if (!bindingRow) {
       // Only log for non-trivial message types (skip noisy stream_delta)
@@ -501,6 +531,56 @@ export class ChannelRouterImpl implements ChannelRouter {
     }).catch((err) => console.error('[ChannelRouter] finish stream error:', err));
   }
 
+  /** Route approval notification to IM when web is not viewing the session */
+  private routeApprovalToIM(sessionId: string, msg: LobbyMessage): void {
+    // If web is viewing this session, no need to push to IM
+    if (this.sessionManager.isSessionViewedOnWeb(sessionId)) return;
+
+    // Find IM binding for this session
+    let bindingRow = this.resolveResponseBinding(sessionId);
+
+    // Fallback: if no binding for this session, try Lobby Manager's binding
+    if (!bindingRow && this.lobbyManager) {
+      const lmSessionId = this.lobbyManager.getSessionId();
+      if (lmSessionId) {
+        bindingRow = this.resolveResponseBinding(lmSessionId);
+      }
+    }
+
+    if (!bindingRow) return;
+
+    const provider = this.providers.get(`${bindingRow.channel_name}:${bindingRow.account_id}`);
+    if (!provider) return;
+
+    const identity = {
+      channelName: bindingRow.channel_name,
+      accountId: bindingRow.account_id,
+      peerId: bindingRow.peer_id,
+      peerDisplayName: bindingRow.peer_display_name ?? undefined,
+    };
+
+    // Send approval card
+    const content = msg.content as Record<string, unknown>;
+    const toolName = (content.toolName as string) ?? 'unknown';
+    const toolInput = content.toolInput as Record<string, unknown> | undefined;
+    const requestId = content.requestId as string;
+    const inputPreview = toolInput ? JSON.stringify(toolInput).slice(0, 200) : '';
+    const sessionName = this.getSessionDisplayName(sessionId);
+    const taskId = `ap_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+
+    const formatted = `**【${sessionName}】🔒 工具审批: \`${toolName}\`**\n> ${inputPreview}`;
+
+    provider.sendMessage({
+      identity,
+      text: formatted,
+      kind: 'approval',
+      actions: [
+        { label: '✅ 允许', callbackData: `approve:${sessionId}:${requestId}:${taskId}` },
+        { label: '❌ 拒绝', callbackData: `deny:${sessionId}:${requestId}:${taskId}` },
+      ],
+    }).catch((err) => console.error('[ChannelRouter] approval IM push error:', err));
+  }
+
   // ─── Response Binding Resolution ─────────────────────────────────
 
   private resolveResponseBinding(sessionId: string): ChannelBindingRow | null {
@@ -584,6 +664,7 @@ export class ChannelRouterImpl implements ChannelRouter {
 
     resetBindingTargetBySession(this.db, sessionId);
     this.lastSenderBySession.delete(sessionId);
+    this.messageOriginBySession.delete(sessionId);
 
     for (const binding of bindings) {
       const provider = this.providers.get(`${binding.channel_name}:${binding.account_id}`);

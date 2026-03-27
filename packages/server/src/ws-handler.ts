@@ -87,6 +87,7 @@ export function handleWebSocket(
         }
 
         case 'message.send': {
+          channelRouter?.setMessageOrigin(data.sessionId, 'web');
           await sessionManager.sendMessage(data.sessionId, data.content);
           break;
         }
@@ -162,6 +163,11 @@ export function handleWebSocket(
 
         case 'session.recover': {
           sessionManager.recoverSession(data.sessionId);
+          break;
+        }
+
+        case 'session.view': {
+          sessionManager.registerWebViewer(listenerId, data.sessionId ?? null);
           break;
         }
 
@@ -272,6 +278,7 @@ export function handleWebSocket(
     sessionManager.removeMessageListener(listenerId);
     sessionManager.removeSessionUpdateListener(listenerId);
     sessionManager.removeNavigateListener(listenerId);
+    sessionManager.unregisterWebViewer(listenerId);
   });
 
   function send(msg: ServerMessage): void {

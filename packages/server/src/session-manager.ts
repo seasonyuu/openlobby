@@ -49,6 +49,10 @@ export class SessionManager {
   private pendingPlanMode = new Map<string, boolean>();
   /** In-memory message cache as fallback when adapter can't read history from disk */
   private messageCache = new Map<string, LobbyMessage[]>();
+  /** Track which sessions are being viewed on web (sessionId → set of listener IDs) */
+  private webViewers = new Map<string, Set<string>>();
+  /** Reverse map: listenerId → sessionId they're viewing */
+  private viewerSessions = new Map<string, string>();
 
   constructor(db?: Database.Database) {
     this.db = db ?? null;
@@ -624,6 +628,35 @@ export class SessionManager {
       }
     }
     return undefined;
+  }
+
+  registerWebViewer(listenerId: string, sessionId: string | null): void {
+    // Remove from previous session
+    const prevSession = this.viewerSessions.get(listenerId);
+    if (prevSession) {
+      this.webViewers.get(prevSession)?.delete(listenerId);
+      if (this.webViewers.get(prevSession)?.size === 0) {
+        this.webViewers.delete(prevSession);
+      }
+    }
+
+    if (sessionId) {
+      this.viewerSessions.set(listenerId, sessionId);
+      if (!this.webViewers.has(sessionId)) {
+        this.webViewers.set(sessionId, new Set());
+      }
+      this.webViewers.get(sessionId)!.add(listenerId);
+    } else {
+      this.viewerSessions.delete(listenerId);
+    }
+  }
+
+  unregisterWebViewer(listenerId: string): void {
+    this.registerWebViewer(listenerId, null);
+  }
+
+  isSessionViewedOnWeb(sessionId: string): boolean {
+    return (this.webViewers.get(sessionId)?.size ?? 0) > 0;
   }
 
   async cleanupIdle(maxIdleMinutes: number = 60): Promise<string[]> {

@@ -248,6 +248,11 @@ export function wsDestroySession(sessionId: string): void {
 
 export function wsRequestSessionHistory(sessionId: string): void {
   wsSend({ type: 'session.history', sessionId });
+  wsSend({ type: 'session.view', sessionId });
+}
+
+export function wsSetActiveView(sessionId: string | null): void {
+  wsSend({ type: 'session.view', sessionId });
 }
 
 export function wsRequestSessionList(): void {

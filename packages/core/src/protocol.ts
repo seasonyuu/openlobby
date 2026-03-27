@@ -47,6 +47,7 @@ export type ClientMessage =
   | { type: 'session.plan-mode'; sessionId: string; enabled: boolean }
   | { type: 'session.recover'; sessionId: string }
   | { type: 'completion.request'; sessionId: string }
+  | { type: 'session.view'; sessionId: string | null }
   | { type: 'channel.discover-plugins' };
 
 /** 后端 → 前端 */
