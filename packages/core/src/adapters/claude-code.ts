@@ -12,6 +12,7 @@ import type {
   LobbyMessage,
   SessionSummary,
   ControlDecision,
+  AdapterCommand,
 } from '../types.js';
 
 function makeLobbyMessage(
@@ -377,6 +378,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   readonly name = 'claude-code';
   readonly displayName = 'Claude Code';
   private detectedCliPath: string | undefined;
+  private cachedCommands: AdapterCommand[] | null = null;
 
   async detect(): Promise<{
     installed: boolean;
@@ -703,5 +705,56 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   getResumeCommand(sessionId: string): string {
     return `claude --resume ${sessionId}`;
+  }
+
+  async listCommands(): Promise<AdapterCommand[]> {
+    if (this.cachedCommands) return this.cachedCommands;
+    try {
+      const output = execSync('claude print-commands', {
+        encoding: 'utf-8',
+        timeout: 5000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+      // Parse lines like: /command - description
+      const commands: AdapterCommand[] = [];
+      for (const line of output.split('\n')) {
+        const match = line.match(/^\s*(\/\S+)\s*(?:\[([^\]]*)\])?\s*[-\u2013\u2014]\s*(.+)$/);
+        if (match) {
+          commands.push({
+            name: match[1],
+            description: match[3].trim(),
+            ...(match[2] ? { args: match[2] } : {}),
+          });
+        }
+      }
+      if (commands.length > 0) {
+        this.cachedCommands = commands;
+        return commands;
+      }
+    } catch {
+      // CLI not available or command failed
+    }
+    // Fallback: return common Claude Code commands
+    this.cachedCommands = [
+      { name: '/compact', description: 'Compact conversation to save context', args: '[instructions]' },
+      { name: '/cost', description: 'Show token usage and cost for this session' },
+      { name: '/model', description: 'Switch the AI model', args: '<model-name>' },
+      { name: '/permissions', description: 'View or update permission rules' },
+      { name: '/memory', description: 'Edit CLAUDE.md memory files' },
+      { name: '/config', description: 'View or modify settings' },
+      { name: '/status', description: 'Show account and session status' },
+      { name: '/doctor', description: 'Check health of Claude Code' },
+      { name: '/review', description: 'Review code changes' },
+      { name: '/plan', description: 'Toggle plan mode (read-only exploration)' },
+      { name: '/vim', description: 'Toggle vim keybinding mode' },
+      { name: '/fast', description: 'Toggle fast mode (same model, faster output)' },
+      { name: '/hooks', description: 'Manage event hooks' },
+      { name: '/mcp', description: 'Manage MCP servers' },
+      { name: '/add-dir', description: 'Add directory to tool access', args: '<path>' },
+      { name: '/init', description: 'Initialize CLAUDE.md in project' },
+      { name: '/terminal-setup', description: 'Install shell integration (Shift+Enter)' },
+      { name: '/help', description: 'Show Claude Code help' },
+    ];
+    return this.cachedCommands;
   }
 }

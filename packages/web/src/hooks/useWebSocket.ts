@@ -26,6 +26,7 @@ interface ServerMessage {
   providerId?: string;
   healthy?: boolean;
   identityKey?: string;
+  commands?: Array<{ name: string; description: string; args?: string }>;
 }
 
 /**
@@ -183,6 +184,12 @@ function ensureConnection(url: string) {
         }
         break;
 
+      case 'completion.response':
+        if (data.sessionId && data.commands) {
+          state.setSessionCommands(data.sessionId, data.commands);
+        }
+        break;
+
       case 'error':
         console.error('[WS] Server error:', data.error);
         break;
@@ -304,6 +311,10 @@ export function wsBind(identityKey: string, target: string): void {
 
 export function wsUnbind(identityKey: string): void {
   wsSend({ type: 'channel.unbind', identityKey });
+}
+
+export function wsRequestCompletions(sessionId: string): void {
+  wsSend({ type: 'completion.request', sessionId });
 }
 
 // ---- Hook: call once in App to boot the connection ----

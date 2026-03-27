@@ -165,6 +165,19 @@ export function handleWebSocket(
           break;
         }
 
+        case 'completion.request': {
+          const adapter = sessionManager.getAdapterForSession(data.sessionId as string);
+          const commands = adapter?.listCommands
+            ? await adapter.listCommands()
+            : [];
+          socket.send(JSON.stringify({
+            type: 'completion.response',
+            sessionId: data.sessionId,
+            commands,
+          }));
+          break;
+        }
+
         case 'session.destroy': {
           await sessionManager.destroySession(data.sessionId);
           // Notify channel router about session destruction

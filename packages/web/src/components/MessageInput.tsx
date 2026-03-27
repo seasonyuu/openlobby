@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useLobbyStore } from '../stores/lobby-store';
-import { wsTogglePlanMode } from '../hooks/useWebSocket';
+import { wsTogglePlanMode, wsRequestCompletions } from '../hooks/useWebSocket';
 import SlashCommandMenu, {
   filterCommands,
   type SlashCommand,
@@ -56,6 +56,9 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
   const activeSession = useLobbyStore((s) =>
     s.activeSessionId ? s.sessions[s.activeSessionId] : undefined,
   );
+  const sessionCommands = useLobbyStore((s) =>
+    s.activeSessionId ? s.commandsBySession[s.activeSessionId] : undefined,
+  );
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -82,6 +85,10 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
         setSlashFilter(query);
         setShowSlashMenu(true);
         setSlashIndex(0);
+        // Fetch commands if not cached
+        if (activeSessionId && !sessionCommands) {
+          wsRequestCompletions(activeSessionId);
+        }
       } else {
         setShowSlashMenu(false);
       }
@@ -194,7 +201,7 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Slash menu navigation
     if (showSlashMenu) {
-      const commands = filterCommands(slashFilter);
+      const commands = filterCommands(slashFilter, sessionCommands ?? []);
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         setSlashIndex((i) => Math.min(i + 1, commands.length - 1));
@@ -268,6 +275,7 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
           filter={slashFilter}
           selectedIndex={slashIndex}
           onSelect={handleSlashSelect}
+          commands={sessionCommands}
         />
       )}
 

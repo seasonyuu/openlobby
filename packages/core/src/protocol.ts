@@ -4,6 +4,7 @@ import type {
   SessionSummary,
   LobbyMessage,
   ControlRequest,
+  AdapterCommand,
 } from './types.js';
 import type {
   ChannelProviderConfig,
@@ -43,7 +44,8 @@ export type ClientMessage =
   | { type: 'channel.bind'; identityKey: string; target: 'lobby-manager' | string }
   | { type: 'channel.unbind'; identityKey: string }
   | { type: 'session.plan-mode'; sessionId: string; enabled: boolean }
-  | { type: 'session.recover'; sessionId: string };
+  | { type: 'session.recover'; sessionId: string }
+  | { type: 'completion.request'; sessionId: string };
 
 /** 后端 → 前端 */
 export type ServerMessage =
@@ -70,4 +72,5 @@ export type ServerMessage =
   | { type: 'channel.provider-status'; providerId: string; healthy: boolean }
   | { type: 'channel.bindings-list'; bindings: ChannelBinding[] }
   | { type: 'channel.binding-updated'; binding: ChannelBinding }
-  | { type: 'channel.binding-removed'; identityKey: string };
+  | { type: 'channel.binding-removed'; identityKey: string }
+  | { type: 'completion.response'; sessionId: string; commands: AdapterCommand[] };

@@ -14,6 +14,7 @@ import type {
   LobbyMessage,
   SessionSummary,
   ControlDecision,
+  AdapterCommand,
 } from '../types.js';
 
 // ──────────────────────────────────────────────
@@ -879,6 +880,14 @@ export class CodexCliAdapter implements AgentAdapter {
 
   getResumeCommand(sessionId: string): string {
     return `codex --resume ${sessionId}`;
+  }
+
+  async listCommands(): Promise<AdapterCommand[]> {
+    return [
+      { name: '/help', description: 'Show help information' },
+      { name: '/model', description: 'Switch the AI model', args: '<model-name>' },
+      { name: '/approval', description: 'Change approval mode', args: '<mode>' },
+    ];
   }
 
   // ── Private helpers ──

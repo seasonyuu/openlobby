@@ -7,6 +7,7 @@ export type {
   AgentProcess,
   SessionSummary,
   AgentAdapter,
+  AdapterCommand,
   McpServerConfig,
 } from './types.js';
 

@@ -6,50 +6,32 @@ export interface SlashCommand {
   args?: string;
 }
 
-// Claude Code CLI built-in commands (all passed through to CLI)
-const CLI_COMMANDS: SlashCommand[] = [
-  { name: '/compact', description: 'Compact conversation to save context', args: '[instructions]' },
-  { name: '/cost', description: 'Show token usage and cost for this session' },
-  { name: '/model', description: 'Switch the AI model', args: '<model-name>' },
-  { name: '/permissions', description: 'View or update permission rules' },
-  { name: '/memory', description: 'Edit CLAUDE.md memory files' },
-  { name: '/config', description: 'View or modify settings' },
-  { name: '/login', description: 'Switch authentication account' },
-  { name: '/logout', description: 'Log out of current account' },
-  { name: '/status', description: 'Show account and session status' },
-  { name: '/doctor', description: 'Check health of Claude Code' },
-  { name: '/review', description: 'Review code changes' },
+// Minimal fallback when no session is active
+const FALLBACK_COMMANDS: SlashCommand[] = [
   { name: '/plan', description: 'Toggle plan mode (read-only exploration)' },
-  { name: '/vim', description: 'Toggle vim keybinding mode' },
-  { name: '/fast', description: 'Toggle fast mode (same model, faster output)' },
-  { name: '/hooks', description: 'Manage event hooks' },
-  { name: '/mcp', description: 'Manage MCP servers' },
-  { name: '/add-dir', description: 'Add directory to tool access', args: '<path>' },
-  { name: '/init', description: 'Initialize CLAUDE.md in project' },
-  { name: '/terminal-setup', description: 'Install shell integration (Shift+Enter)' },
-  { name: '/help', description: 'Show Claude Code help' },
+  { name: '/help', description: 'Show help' },
 ];
-
-export const SLASH_COMMANDS: SlashCommand[] = CLI_COMMANDS;
 
 interface Props {
   filter: string;
   selectedIndex: number;
   onSelect: (cmd: SlashCommand) => void;
+  commands?: SlashCommand[];
 }
 
-export function filterCommands(input: string): SlashCommand[] {
+export function filterCommands(input: string, commands: SlashCommand[]): SlashCommand[] {
   const query = input.toLowerCase();
-  if (!query) return SLASH_COMMANDS;
-  return SLASH_COMMANDS.filter(
+  if (!query) return commands;
+  return commands.filter(
     (cmd) =>
       cmd.name.toLowerCase().includes(query) ||
       cmd.description.toLowerCase().includes(query),
   );
 }
 
-export default function SlashCommandMenu({ filter, selectedIndex, onSelect }: Props) {
-  const commands = filterCommands(filter);
+export default function SlashCommandMenu({ filter, selectedIndex, onSelect, commands }: Props) {
+  const list = commands && commands.length > 0 ? commands : FALLBACK_COMMANDS;
+  const filtered = filterCommands(filter, list);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -57,14 +39,14 @@ export default function SlashCommandMenu({ filter, selectedIndex, onSelect }: Pr
     el?.scrollIntoView({ block: 'nearest' });
   }, [selectedIndex]);
 
-  if (commands.length === 0) return null;
+  if (filtered.length === 0) return null;
 
   return (
     <div
       ref={listRef}
       className="absolute bottom-full left-0 right-0 mb-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl max-h-72 overflow-y-auto z-50"
     >
-      {commands.map((cmd, i) => (
+      {filtered.map((cmd, i) => (
         <button
           key={cmd.name}
           className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${

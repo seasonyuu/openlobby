@@ -92,6 +92,13 @@ export interface SessionSummary {
   };
 }
 
+/** Slash command exposed by an adapter */
+export interface AdapterCommand {
+  name: string;
+  description: string;
+  args?: string;
+}
+
 /** Adapter 接口 — 每个 Agentic CLI 实现一个 */
 export interface AgentAdapter {
   readonly name: string;
@@ -104,4 +111,5 @@ export interface AgentAdapter {
   readSessionHistory(sessionId: string): Promise<LobbyMessage[]>;
   discoverSessions(cwd?: string): Promise<SessionSummary[]>;
   getResumeCommand(sessionId: string): string;
+  listCommands?(): Promise<AdapterCommand[]>;
 }
