@@ -1,0 +1,46 @@
+{
+  "name": "cclobby",
+  "version": "0.2.0",
+  "description": "ccLobby — Unified session manager for AI coding agents (Claude Code, Codex CLI) with an IM-style web UI",
+  "type": "module",
+  "bin": {
+    "cclobby": "./dist/bin.js"
+  },
+  "files": [
+    "dist/bin.js",
+    "web/"
+  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "@cclobby/server": "workspace:*",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "claude",
+    "codex",
+    "cli",
+    "session-manager",
+    "cclobby"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kkkkk1k1/cclobby.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/kkkkk1k1/cclobby#readme",
+  "bugs": {
+    "url": "https://github.com/kkkkk1k1/cclobby/issues"
+  }
+}

@@ -1,0 +1,107 @@
+import type { EventEmitter } from 'node:events';
+
+/** 统一消息格式 — 所有 Adapter 的输出都转换为此格式 */
+export interface LobbyMessage {
+  id: string;
+  sessionId: string;
+  timestamp: number;
+  type:
+    | 'system'
+    | 'user'
+    | 'assistant'
+    | 'tool_use'
+    | 'tool_result'
+    | 'control'
+    | 'stream_delta'
+    | 'result';
+  content: string | Record<string, unknown>;
+  meta?: {
+    model?: string;
+    tokenUsage?: { input: number; output: number };
+    costUsd?: number;
+    toolName?: string;
+    isError?: boolean;
+  };
+}
+
+export interface McpServerConfig {
+  type?: 'stdio';
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+export interface SpawnOptions {
+  cwd: string;
+  prompt?: string;
+  model?: string;
+  permissionMode?: string;
+  systemPrompt?: string;
+  allowedTools?: string[];
+  mcpServers?: Record<string, McpServerConfig>;
+  /** API key to authenticate with the Claude API (injected as ANTHROPIC_AUTH_TOKEN) */
+  apiKey?: string;
+}
+
+export interface ResumeOptions extends Partial<SpawnOptions> {
+  prompt?: string;
+}
+
+export type ControlDecision = 'allow' | 'deny';
+
+export interface ControlRequest {
+  requestId: string;
+  sessionId: string;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+}
+
+/** 代表一个运行中的 CLI 会话 */
+export interface AgentProcess extends EventEmitter {
+  sessionId: string;
+  readonly adapter: string;
+  status: 'running' | 'idle' | 'stopped' | 'error' | 'awaiting_approval';
+
+  sendMessage(content: string): void;
+  respondControl(requestId: string, decision: ControlDecision): void;
+  updateOptions(opts: Partial<SpawnOptions>): void;
+  setPlanMode?(enabled: boolean): void;
+  kill(): void;
+}
+
+export interface SessionSummary {
+  id: string;
+  adapterName: string;
+  displayName: string;
+  status: string;
+  lastActiveAt: number;
+  lastMessage?: string;
+  messageCount: number;
+  model?: string;
+  permissionMode?: string;
+  cwd: string;
+  origin: 'lobby' | 'cli' | 'lobby-manager';
+  resumeCommand: string;
+  jsonlPath?: string;
+  planMode?: boolean;
+  /** Channel binding info (if session is bound to an IM channel) */
+  channelBinding?: {
+    channelName: string;
+    peerId: string;
+    peerDisplayName?: string;
+  };
+}
+
+/** Adapter 接口 — 每个 Agentic CLI 实现一个 */
+export interface AgentAdapter {
+  readonly name: string;
+  readonly displayName: string;
+
+  detect(): Promise<{ installed: boolean; version?: string; path?: string }>;
+  spawn(options: SpawnOptions): Promise<AgentProcess>;
+  resume(sessionId: string, options?: ResumeOptions): Promise<AgentProcess>;
+  getSessionStoragePath(): string;
+  readSessionHistory(sessionId: string): Promise<LobbyMessage[]>;
+  discoverSessions(cwd?: string): Promise<SessionSummary[]>;
+  getResumeCommand(sessionId: string): string;
+}

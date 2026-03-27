@@ -1,0 +1,707 @@
+import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { execSync } from 'node:child_process';
+import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { join, basename } from 'node:path';
+import type {
+  AgentAdapter,
+  AgentProcess,
+  SpawnOptions,
+  ResumeOptions,
+  LobbyMessage,
+  SessionSummary,
+  ControlDecision,
+} from '../types.js';
+
+function makeLobbyMessage(
+  sessionId: string,
+  type: LobbyMessage['type'],
+  content: string | Record<string, unknown>,
+  meta?: LobbyMessage['meta'],
+): LobbyMessage {
+  return {
+    id: randomUUID(),
+    sessionId,
+    timestamp: Date.now(),
+    type,
+    content,
+    meta,
+  };
+}
+
+/**
+ * Convert an SDKMessage into LobbyMessage[].
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function sdkMessageToLobby(sessionId: string, msg: any): LobbyMessage[] {
+  const messages: LobbyMessage[] = [];
+
+  switch (msg.type) {
+    case 'system': {
+      // Skip system init messages — they're internal metadata
+      break;
+    }
+
+    case 'assistant': {
+      const content = msg.message?.content ?? [];
+      for (const block of content) {
+        if (block.type === 'text') {
+          messages.push(
+            makeLobbyMessage(sessionId, 'assistant', block.text ?? '', {
+              model: msg.message?.model,
+              tokenUsage: msg.message?.usage
+                ? {
+                    input: msg.message.usage.input_tokens ?? 0,
+                    output: msg.message.usage.output_tokens ?? 0,
+                  }
+                : undefined,
+            }),
+          );
+        } else if (block.type === 'tool_use') {
+          messages.push(
+            makeLobbyMessage(
+              sessionId,
+              'tool_use',
+              JSON.stringify(block.input ?? {}, null, 2),
+              { toolName: block.name },
+            ),
+          );
+        } else if (block.type === 'tool_result') {
+          messages.push(
+            makeLobbyMessage(sessionId, 'tool_result', {
+              toolUseId: block.id,
+              content: block.text,
+            }),
+          );
+        }
+      }
+      break;
+    }
+
+    case 'result': {
+      messages.push(
+        makeLobbyMessage(
+          sessionId,
+          'result',
+          {
+            subtype: msg.subtype,
+            durationMs: msg.duration_ms,
+            result: msg.result,
+            isError: msg.is_error,
+          },
+          { costUsd: msg.total_cost_usd },
+        ),
+      );
+      break;
+    }
+
+    case 'stream_event': {
+      // Extract text deltas from Anthropic API stream events
+      const event = msg.event;
+      if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        const text = event.delta.text ?? '';
+        if (text) {
+          messages.push(makeLobbyMessage(sessionId, 'stream_delta', text));
+        }
+      }
+      break;
+    }
+
+    default:
+      break;
+  }
+  return messages;
+}
+
+/** Read-only tools allowed in plan mode */
+const PLAN_MODE_TOOLS = ['Read', 'Glob', 'Grep', 'Agent', 'WebSearch', 'WebFetch'];
+
+const PLAN_MODE_SYSTEM_PROMPT = `
+You are in PLAN MODE. Only explore the codebase and produce a detailed implementation plan.
+Do NOT modify any files. Use only read-only tools (Read, Glob, Grep).
+Structure your output as: Context → Approach → File changes → Verification steps.
+
+When you need user input or want to present choices, use this exact format:
+
+<!-- CHOICE -->
+{"question":"Your question here","options":[{"label":"Option A","description":"Description A"},{"label":"Option B","description":"Description B"}]}
+<!-- /CHOICE -->
+
+When your plan is finalized and ready for execution, always end with:
+
+<!-- CHOICE -->
+{"question":"Plan is ready. How to proceed?","options":[{"label":"Execute Plan","description":"Exit plan mode and start implementation"},{"label":"Continue Refining","description":"Ask more questions or adjust the plan"}]}
+<!-- /CHOICE -->
+`;
+
+class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
+  sessionId: string;
+  readonly adapter = 'claude-code';
+  status: AgentProcess['status'] = 'idle';
+
+  private spawnOptions: SpawnOptions;
+  /** The real session ID assigned by Claude Code (set after first query) */
+  private realSessionId: string | null = null;
+  private planMode = false;
+  private pendingControls = new Map<
+    string,
+    {
+      toolInput: Record<string, unknown>;
+      resolve: (result: {
+        behavior: string;
+        updatedInput?: Record<string, unknown>;
+        message?: string;
+      }) => void;
+    }
+  >();
+  private abortController = new AbortController();
+
+  constructor(sessionId: string, options: SpawnOptions, private claudeCliPath?: string) {
+    super();
+    this.sessionId = sessionId;
+    this.spawnOptions = options;
+
+    // If an initial prompt was provided, start the query immediately
+    if (options.prompt) {
+      this.runQuery(options.prompt);
+    }
+  }
+
+  private async runQuery(prompt: string, resumeId?: string): Promise<void> {
+    this.status = 'running';
+
+    try {
+      const sdk = await import('@anthropic-ai/claude-agent-sdk');
+
+      // Build env for subprocess: merge settings.json env + process.env + apiKey
+      const subprocessEnv: Record<string, string | undefined> = { ...process.env };
+
+      // Load env from ~/.claude/settings.json if it exists
+      const home = process.env.HOME ?? process.env.USERPROFILE ?? '~';
+      const settingsPath = `${home}/.claude/settings.json`;
+      try {
+        const { readFileSync } = await import('node:fs');
+        const settingsContent = readFileSync(settingsPath, 'utf-8');
+        const settings = JSON.parse(settingsContent);
+        if (settings.env && typeof settings.env === 'object') {
+          Object.assign(subprocessEnv, settings.env);
+        }
+      } catch {
+        // settings.json doesn't exist or can't be read — not an error
+      }
+
+      // If apiKey provided, inject it (overrides settings)
+      if (this.spawnOptions.apiKey) {
+        subprocessEnv.ANTHROPIC_API_KEY = this.spawnOptions.apiKey;
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const queryOpts: any = {
+        // Point SDK to the real Claude CLI binary (avoids bundled-path mismatch)
+        pathToClaudeCodeExecutable: this.claudeCliPath,
+        // Pass sanitized env to the spawned CLI process
+        env: subprocessEnv,
+        // Only auto-allow read-only tools; Write/Edit/Bash require approval via canUseTool
+        allowedTools: this.spawnOptions.allowedTools ?? [
+          'Read', 'Glob', 'Grep',
+        ],
+        cwd: this.spawnOptions.cwd,
+        abortController: this.abortController,
+        // 'default' mode prompts for dangerous ops → routed through canUseTool
+        permissionMode: this.spawnOptions.permissionMode ?? 'default',
+        canUseTool: async (
+          toolName: string,
+          toolInput: Record<string, unknown>,
+          options: { toolUseID: string; signal: AbortSignal },
+        ) => {
+          return this.handleToolApproval(toolName, toolInput, options.toolUseID);
+        },
+      };
+      if (this.spawnOptions.model) {
+        queryOpts.model = this.spawnOptions.model;
+      }
+      if (this.spawnOptions.systemPrompt) {
+        queryOpts.systemPrompt = this.spawnOptions.systemPrompt;
+      }
+      if (this.planMode) {
+        queryOpts.systemPrompt = (queryOpts.systemPrompt ?? '') + PLAN_MODE_SYSTEM_PROMPT;
+      }
+      if (this.spawnOptions.mcpServers) {
+        queryOpts.mcpServers = this.spawnOptions.mcpServers;
+      }
+      if (resumeId) {
+        queryOpts.resume = resumeId;
+      }
+
+      console.log('[ClaudeCode] Starting query:', {
+        cwd: this.spawnOptions.cwd,
+        prompt: prompt.slice(0, 100),
+        resume: resumeId ?? null,
+        mcpServers: this.spawnOptions.mcpServers ? Object.keys(this.spawnOptions.mcpServers) : [],
+        allowedTools: queryOpts.allowedTools,
+        permissionMode: queryOpts.permissionMode,
+        hasApiKey: !!this.spawnOptions.apiKey,
+        hasEnvApiKey: !!subprocessEnv.ANTHROPIC_API_KEY,
+        hasEnvAuthToken: !!subprocessEnv.ANTHROPIC_AUTH_TOKEN,
+      });
+
+      const stream = sdk.query({ prompt, options: queryOpts });
+
+      for await (const msg of stream) {
+        if (this.abortController.signal.aborted) break;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sdkMsg = msg as any;
+
+        // Extract real session ID from system init message
+        if (sdkMsg.type === 'system' && sdkMsg.session_id) {
+          this.realSessionId = sdkMsg.session_id as string;
+          this.sessionId = this.realSessionId;
+          console.log('[ClaudeCode] Real session ID:', this.realSessionId);
+        }
+
+        const lobbyMessages = sdkMessageToLobby(this.sessionId, sdkMsg);
+        for (const lobbyMsg of lobbyMessages) {
+          this.emit('message', lobbyMsg);
+        }
+      }
+
+      this.status = 'idle';
+      console.log('[ClaudeCode] Query completed');
+      this.emit('idle');
+    } catch (err) {
+      console.error('[ClaudeCode] Query error:', err);
+      this.status = 'error';
+
+      const errorMsg = makeLobbyMessage(
+        this.sessionId,
+        'system',
+        { error: err instanceof Error ? err.message : String(err) },
+        { isError: true },
+      );
+      this.emit('message', errorMsg);
+      this.emit('error', err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  private handleToolApproval(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    toolUseID: string,
+  ): Promise<{
+    behavior: string;
+    updatedInput?: Record<string, unknown>;
+    message?: string;
+    toolUseID?: string;
+  }> {
+    // In plan mode, auto-deny all non-read-only tools
+    if (this.planMode && !PLAN_MODE_TOOLS.includes(toolName)) {
+      console.log('[ClaudeCode] Plan mode: denied tool', toolName);
+      return Promise.resolve({
+        behavior: 'deny',
+        message: 'Plan mode: only read-only tools are allowed',
+        toolUseID,
+      });
+    }
+
+    const requestId = randomUUID();
+    console.log('[ClaudeCode] Tool approval requested:', toolName, 'toolUseID:', toolUseID);
+
+    const controlMsg = makeLobbyMessage(this.sessionId, 'control', {
+      requestId,
+      toolName,
+      toolInput,
+      toolUseID,
+    });
+    this.emit('message', controlMsg);
+
+    return new Promise((resolve) => {
+      this.pendingControls.set(requestId, {
+        toolInput,
+        resolve: (result) => resolve({ ...result, toolUseID }),
+      });
+    });
+  }
+
+  sendMessage(content: string): void {
+    console.log('[ClaudeCode] sendMessage:', content.slice(0, 100));
+    this.abortController = new AbortController();
+    if (this.realSessionId) {
+      // We have a real session — resume it
+      console.log('[ClaudeCode] Resuming session:', this.realSessionId);
+      this.runQuery(content, this.realSessionId);
+    } else {
+      // First message — start a fresh query (no resume)
+      console.log('[ClaudeCode] Starting fresh query');
+      this.runQuery(content);
+    }
+  }
+
+  respondControl(requestId: string, decision: ControlDecision): void {
+    const pending = this.pendingControls.get(requestId);
+    if (!pending) {
+      console.warn('[ClaudeCode] No pending control for:', requestId);
+      return;
+    }
+
+    console.log('[ClaudeCode] Control response:', requestId, decision);
+    this.pendingControls.delete(requestId);
+
+    if (decision === 'allow') {
+      pending.resolve({ behavior: 'allow', updatedInput: pending.toolInput });
+    } else {
+      pending.resolve({ behavior: 'deny', message: 'User denied the tool' });
+    }
+  }
+
+  updateOptions(opts: Partial<SpawnOptions>): void {
+    Object.assign(this.spawnOptions, opts);
+    console.log('[ClaudeCode] Options updated:', Object.keys(opts));
+  }
+
+  setPlanMode(enabled: boolean): void {
+    this.planMode = enabled;
+    console.log('[ClaudeCode] Plan mode:', enabled ? 'ON' : 'OFF');
+  }
+
+  kill(): void {
+    console.log('[ClaudeCode] Killing process');
+    this.abortController.abort();
+    this.status = 'stopped';
+    this.emit('exit', 0);
+  }
+}
+
+export class ClaudeCodeAdapter implements AgentAdapter {
+  readonly name = 'claude-code';
+  readonly displayName = 'Claude Code';
+  private detectedCliPath: string | undefined;
+
+  async detect(): Promise<{
+    installed: boolean;
+    version?: string;
+    path?: string;
+  }> {
+    try {
+      const version = execSync('claude --version', {
+        encoding: 'utf-8',
+      }).trim();
+      const cliPath = execSync('which claude', {
+        encoding: 'utf-8',
+      }).trim();
+      this.detectedCliPath = cliPath;
+      return { installed: true, version, path: cliPath };
+    } catch {
+      return { installed: false };
+    }
+  }
+
+  async spawn(options: SpawnOptions): Promise<AgentProcess> {
+    const sessionId = randomUUID();
+    console.log('[ClaudeCodeAdapter] Spawning session:', sessionId);
+    return new ClaudeCodeProcess(sessionId, options, this.detectedCliPath);
+  }
+
+  async resume(
+    sessionId: string,
+    options?: ResumeOptions,
+  ): Promise<AgentProcess> {
+    const proc = new ClaudeCodeProcess(sessionId, {
+      cwd: options?.cwd ?? process.cwd(),
+      systemPrompt: options?.systemPrompt,
+      permissionMode: options?.permissionMode,
+      allowedTools: options?.allowedTools,
+      mcpServers: options?.mcpServers,
+      model: options?.model,
+    }, this.detectedCliPath);
+    if (options?.prompt) {
+      proc.sendMessage(options.prompt);
+    }
+    return proc;
+  }
+
+  getSessionStoragePath(): string {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? '~';
+    return `${home}/.claude/projects`;
+  }
+
+  async readSessionHistory(sessionId: string): Promise<LobbyMessage[]> {
+    const storagePath = this.getSessionStoragePath();
+    // Search all project dirs for the session JSONL
+    const jsonlPath = this.findSessionJsonl(storagePath, sessionId);
+    if (!jsonlPath) return [];
+
+    const messages: LobbyMessage[] = [];
+    const rl = createInterface({
+      input: createReadStream(jsonlPath, { encoding: 'utf-8' }),
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        const converted = this.jsonlLineToLobbyMessages(sessionId, obj);
+        messages.push(...converted);
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    return messages;
+  }
+
+  /** Find the JSONL file for a session ID across all project dirs */
+  private findSessionJsonl(storagePath: string, sessionId: string): string | null {
+    // Direct path: <storagePath>/<project-dir>/<sessionId>.jsonl
+    try {
+      const projectDirs = readdirSync(storagePath);
+      for (const dir of projectDirs) {
+        const candidate = join(storagePath, dir, `${sessionId}.jsonl`);
+        if (existsSync(candidate)) return candidate;
+      }
+    } catch {
+      // storage path doesn't exist
+    }
+    return null;
+  }
+
+  /** Convert a Claude Code JSONL line to LobbyMessage[] */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private jsonlLineToLobbyMessages(sessionId: string, obj: any): LobbyMessage[] {
+    const type = obj.type as string;
+    const timestamp = obj.timestamp ? new Date(obj.timestamp).getTime() : Date.now();
+    const uuid = (obj.uuid ?? obj.messageId ?? randomUUID()) as string;
+
+    if (type === 'user' && obj.message?.content) {
+      if (obj.isMeta) return [];
+      let content: string;
+      if (typeof obj.message.content === 'string') {
+        content = obj.message.content;
+      } else if (Array.isArray(obj.message.content)) {
+        // Extract text from content block array
+        const parts: string[] = [];
+        for (const block of obj.message.content) {
+          if (block.type === 'text' && block.text) {
+            parts.push(block.text);
+          } else if (block.type === 'tool_result') {
+            // Skip tool_result blocks in user messages (they are system context)
+          }
+        }
+        content = parts.join('\n') || '';
+      } else {
+        content = '';
+      }
+      if (!content) return [];
+      if (content.startsWith('<command-name>') || content.startsWith('<local-command')) return [];
+      return [{ id: uuid, sessionId, timestamp, type: 'user' as const, content }];
+    }
+
+    if (type === 'assistant' && obj.message?.content) {
+      const contentBlocks = obj.message.content;
+      if (typeof contentBlocks === 'string') {
+        return [{ id: uuid, sessionId, timestamp, type: 'assistant' as const, content: contentBlocks }];
+      }
+      if (Array.isArray(contentBlocks)) {
+        const results: LobbyMessage[] = [];
+        for (const block of contentBlocks) {
+          if (block.type === 'text' && block.text) {
+            results.push({
+              id: `${uuid}-text-${results.length}`,
+              sessionId,
+              timestamp,
+              type: 'assistant',
+              content: block.text,
+            });
+          } else if (block.type === 'tool_use') {
+            results.push({
+              id: `${uuid}-tool-${block.id ?? results.length}`,
+              sessionId,
+              timestamp,
+              type: 'tool_use',
+              content: JSON.stringify(block.input ?? {}, null, 2),
+              meta: { toolName: block.name },
+            });
+          } else if (block.type === 'tool_result') {
+            const resultContent = Array.isArray(block.content)
+              ? block.content.map((c: { text?: string }) => c.text ?? '').join('\n')
+              : typeof block.content === 'string' ? block.content : '';
+            results.push({
+              id: `${uuid}-result-${block.tool_use_id ?? results.length}`,
+              sessionId,
+              timestamp,
+              type: 'tool_result',
+              content: resultContent,
+              meta: { isError: block.is_error ?? false },
+            });
+          }
+        }
+        return results;
+      }
+    }
+
+    if (type === 'result') {
+      return [{
+        id: uuid,
+        sessionId,
+        timestamp,
+        type: 'result' as const,
+        content: obj.subtype === 'success' ? 'Completed' : (obj.error ?? 'Failed'),
+        meta: {
+          costUsd: obj.cost_usd,
+          tokenUsage: obj.usage
+            ? { input: obj.usage.input_tokens, output: obj.usage.output_tokens }
+            : undefined,
+        },
+      }];
+    }
+
+    return [];
+  }
+
+  async discoverSessions(filterCwd?: string): Promise<SessionSummary[]> {
+    const storagePath = this.getSessionStoragePath();
+    if (!existsSync(storagePath)) return [];
+
+    const results: SessionSummary[] = [];
+    let projectDirs: string[];
+    try {
+      projectDirs = readdirSync(storagePath);
+    } catch {
+      return [];
+    }
+
+    for (const dirName of projectDirs) {
+      const dirPath = join(storagePath, dirName);
+      // Decode project directory: "-Users-kone-project" → "/Users/kone/project"
+      const cwd = this.decodeProjectDir(dirName);
+      if (filterCwd && cwd !== filterCwd) continue;
+
+      let files: string[];
+      try {
+        files = readdirSync(dirPath).filter((f) => f.endsWith('.jsonl'));
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        const sessionId = basename(file, '.jsonl');
+        // Skip "rollout-" sessions (internal Claude sessions)
+        if (sessionId.startsWith('rollout-')) continue;
+
+        const filePath = join(dirPath, file);
+
+        try {
+          const stat = statSync(filePath);
+          const meta = await this.extractSessionMeta(filePath, sessionId);
+
+          // Skip sessions with no meaningful content
+          if (meta.messageCount === 0 && !meta.lastMessage) continue;
+
+          results.push({
+            id: sessionId,
+            adapterName: this.name,
+            displayName: meta.displayName || sessionId.slice(0, 8),
+            status: 'stopped',
+            lastActiveAt: stat.mtimeMs,
+            lastMessage: meta.lastMessage,
+            messageCount: meta.messageCount,
+            model: meta.model,
+            cwd,
+            origin: 'cli',
+            resumeCommand: this.getResumeCommand(sessionId),
+            jsonlPath: filePath,
+          });
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+
+    // Sort by lastActiveAt descending (most recent first)
+    results.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    return results;
+  }
+
+  /**
+   * Decode Claude Code project directory name back to filesystem path.
+   * Convention: "/" is replaced with "-", leading "-" represents root "/"
+   * e.g. "-Users-kone-project" → "/Users/kone/project"
+   */
+  private decodeProjectDir(dirName: string): string {
+    // The directory name starts with "-" representing the root "/"
+    // Each "-" after that represents a "/"
+    return dirName.replace(/-/g, '/');
+  }
+
+  /**
+   * Read the first ~30 lines of a JSONL file to extract session metadata.
+   */
+  private async extractSessionMeta(
+    filePath: string,
+    sessionId: string,
+  ): Promise<{
+    displayName?: string;
+    model?: string;
+    lastMessage?: string;
+    messageCount: number;
+  }> {
+    let model: string | undefined;
+    let lastMessage: string | undefined;
+    let messageCount = 0;
+    let linesRead = 0;
+
+    const rl = createInterface({
+      input: createReadStream(filePath, { encoding: 'utf-8' }),
+    });
+
+    try {
+      for await (const line of rl) {
+        if (!line.trim()) continue;
+        linesRead++;
+
+        try {
+          const obj = JSON.parse(line);
+
+          if (obj.type === 'user' && !obj.isMeta && obj.message?.content) {
+            messageCount++;
+            const content = typeof obj.message.content === 'string'
+              ? obj.message.content
+              : Array.isArray(obj.message.content)
+                ? obj.message.content
+                    .filter((b: { type: string }) => b.type === 'text')
+                    .map((b: { text?: string }) => b.text ?? '')
+                    .join(' ')
+                : '';
+            if (content && !content.startsWith('<')) {
+              lastMessage = content.slice(0, 100);
+            }
+          } else if (obj.type === 'assistant') {
+            messageCount++;
+            if (!model && obj.message?.model) {
+              model = obj.message.model as string;
+            }
+          }
+        } catch {
+          // skip malformed lines
+        }
+
+        // Read enough lines to get useful metadata, but not the whole file
+        if (linesRead >= 50) break;
+      }
+    } finally {
+      rl.close();
+    }
+
+    return {
+      displayName: lastMessage ? lastMessage.slice(0, 30) : sessionId.slice(0, 8),
+      model,
+      lastMessage,
+      messageCount,
+    };
+  }
+
+  getResumeCommand(sessionId: string): string {
+    return `claude --resume ${sessionId}`;
+  }
+}

@@ -36,6 +36,36 @@ function makeLobbyMessage(
   };
 }
 
+/**
+ * Extract text from various content formats that Codex might send.
+ * Handles: string, array of blocks, object with text field.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractTextFromContent(content: any): string {
+  if (typeof content === 'string') return content;
+
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block === 'string') {
+        parts.push(block);
+      } else if (block?.type === 'output_text' || block?.type === 'text') {
+        parts.push(block.text ?? '');
+      } else if (block?.text) {
+        // Fallback: any block with a text field
+        parts.push(block.text);
+      }
+    }
+    return parts.join('');
+  }
+
+  if (content && typeof content === 'object' && 'text' in content) {
+    return (content as { text: string }).text ?? '';
+  }
+
+  return '';
+}
+
 // ──────────────────────────────────────────────
 // CodexCliProcess
 // ──────────────────────────────────────────────
@@ -49,6 +79,9 @@ function makeLobbyMessage(
  *   - The server can send us requests (requestApproval) with its own `id`
  *     that we must respond to.
  */
+/** System prompt injected when plan mode is active */
+const CODEX_PLAN_MODE_PROMPT = `You are in PLAN MODE. Only analyze, explore (read files, search), and plan. Do NOT write, edit, create, or delete any files. Do NOT execute any commands that modify the system. Only use read-only tools.`;
+
 class CodexCliProcess extends EventEmitter implements AgentProcess {
   sessionId: string;
   readonly adapter = 'codex-cli';
@@ -68,6 +101,9 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
   private initialized = false;
   private lineBuffer = '';
   private spawnOptions: SpawnOptions;
+  private injectedMcpServers: string[] = [];
+  private planMode = false;
+  private originalInstructions: string | undefined;
 
   constructor(sessionId: string, options: SpawnOptions) {
     super();
@@ -80,10 +116,14 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
    * create or resume a thread.
    */
   async init(mode: 'spawn' | 'resume', resumeThreadId?: string): Promise<void> {
+    const env = { ...process.env };
+    if (this.spawnOptions.apiKey) {
+      env.OPENAI_API_KEY = this.spawnOptions.apiKey;
+    }
     this.childProcess = spawnChild('codex', ['app-server', '--listen', 'stdio://'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: this.spawnOptions.cwd,
-      env: { ...process.env },
+      env,
     });
 
     this.childProcess.stdout!.on('data', (chunk: Buffer) => {
@@ -111,9 +151,9 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
     try {
       await this.sendRpc('initialize', {
         clientInfo: {
-          name: 'agent-lobby',
-          title: 'AgentLobby',
-          version: '0.1.0',
+          name: 'cclobby',
+          title: 'ccLobby',
+          version: '0.2.0',
         },
       });
       // Send `initialized` notification (no id → notification)
@@ -126,6 +166,35 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
       throw err;
     }
 
+    // === Inject MCP servers via config/value/write (before thread/start) ===
+    if (this.spawnOptions.mcpServers) {
+      for (const [name, config] of Object.entries(this.spawnOptions.mcpServers)) {
+        try {
+          await this.sendRpc('config/value/write', {
+            keyPath: `mcp_servers.${name}`,
+            value: {
+              command: config.command,
+              args: config.args ?? [],
+              env: config.env ?? {},
+            },
+            mergeStrategy: 'upsert',
+          });
+          this.injectedMcpServers.push(name);
+          console.log(`[Codex] MCP server injected: ${name}`);
+        } catch (err) {
+          console.warn(`[Codex] Failed to inject MCP server ${name}:`, err);
+        }
+      }
+      if (this.injectedMcpServers.length > 0) {
+        try {
+          await this.sendRpc('config/mcpServer/reload', {});
+          console.log('[Codex] MCP servers reloaded');
+        } catch (err) {
+          console.warn('[Codex] Failed to reload MCP servers:', err);
+        }
+      }
+    }
+
     // === Start or resume thread ===
     try {
       if (mode === 'resume' && resumeThreadId) {
@@ -135,6 +204,23 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         this.threadId = (result as any)?.thread?.id ?? resumeThreadId;
         this.sessionId = this.threadId!;
+
+        // Inject instructions via config (thread/resume doesn't accept developerInstructions)
+        if (this.spawnOptions.systemPrompt) {
+          await this.sendRpc('config/value/write', {
+            keyPath: 'developer_instructions',
+            value: this.spawnOptions.systemPrompt,
+            mergeStrategy: 'replace',
+          }).catch((err: unknown) => console.warn('[Codex] Failed to inject instructions:', err));
+        }
+        // Inject approval policy
+        if (this.spawnOptions.permissionMode) {
+          await this.sendRpc('config/value/write', {
+            keyPath: 'approval_policy',
+            value: this.mapPermissionMode(this.spawnOptions.permissionMode),
+            mergeStrategy: 'replace',
+          }).catch((err: unknown) => console.warn('[Codex] Failed to set approval_policy:', err));
+        }
       } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const params: any = {
@@ -145,7 +231,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
           params.model = this.spawnOptions.model;
         }
         if (this.spawnOptions.systemPrompt) {
-          params.instructions = this.spawnOptions.systemPrompt;
+          params.developerInstructions = this.spawnOptions.systemPrompt;
         }
         const result = await this.sendRpc('thread/start', params);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -189,7 +275,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
     this.sendRpc('turn/start', {
       threadId: this.threadId,
-      input: [{ type: 'text', text: content, text_elements: [] }],
+      input: [{ type: 'text', text: content }],
     }).catch((err) => {
       console.error('[Codex] turn/start failed:', err);
       this.status = 'error';
@@ -210,9 +296,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
     this.pendingControls.delete(requestId);
 
     // Send JSON-RPC response to the server-initiated request
-    const response = decision === 'allow'
-      ? { accept: {} }
-      : { decline: {} };
+    const response = { decision: decision === 'allow' ? 'accept' : 'decline' };
 
     this.writeRaw({
       jsonrpc: '2.0',
@@ -223,6 +307,30 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
     pending.resolve();
   }
 
+  setPlanMode(enabled: boolean): void {
+    this.planMode = enabled;
+    console.log('[Codex] Plan mode:', enabled ? 'ON' : 'OFF');
+
+    // Inject/restore developer instructions via JSON-RPC
+    if (enabled) {
+      this.originalInstructions = this.spawnOptions.systemPrompt;
+      const planInstructions = this.originalInstructions
+        ? `${this.originalInstructions}\n\n${CODEX_PLAN_MODE_PROMPT}`
+        : CODEX_PLAN_MODE_PROMPT;
+      this.sendRpc('config/value/write', {
+        keyPath: 'developer_instructions',
+        value: planInstructions,
+        mergeStrategy: 'replace',
+      }).catch((err: unknown) => console.warn('[Codex] Failed to set plan mode instructions:', err));
+    } else {
+      this.sendRpc('config/value/write', {
+        keyPath: 'developer_instructions',
+        value: this.originalInstructions ?? '',
+        mergeStrategy: 'replace',
+      }).catch((err: unknown) => console.warn('[Codex] Failed to restore instructions:', err));
+    }
+  }
+
   updateOptions(opts: Partial<SpawnOptions>): void {
     Object.assign(this.spawnOptions, opts);
     console.log('[Codex] Options updated:', Object.keys(opts));
@@ -230,6 +338,17 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
   kill(): void {
     console.log('[Codex] Killing process');
+    // Clean up injected MCP servers from global config
+    if (this.injectedMcpServers.length > 0 && this.childProcess) {
+      for (const name of this.injectedMcpServers) {
+        this.sendRpc('config/value/write', {
+          keyPath: `mcp_servers.${name}`,
+          value: null,
+          mergeStrategy: 'replace',
+        }).catch(() => {});
+      }
+      this.injectedMcpServers = [];
+    }
     if (this.childProcess) {
       this.childProcess.kill();
       this.childProcess = null;
@@ -247,6 +366,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
   private sendRpc(method: string, params: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextId();
+      console.log('[Codex] sendRpc:', method, 'id=', id);
       this.pendingRpc.set(id, { resolve, reject });
       this.writeRaw({ jsonrpc: '2.0', id, method, params });
 
@@ -294,6 +414,8 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handleJsonRpcMessage(msg: any): void {
+    console.log('[Codex] <<', msg.method ?? `response(id=${msg.id})`, JSON.stringify(msg).slice(0, 300));
+
     // === Response to our request ===
     if (msg.id != null && !msg.method) {
       const pending = this.pendingRpc.get(msg.id);
@@ -326,7 +448,30 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
     const method = msg.method as string;
     const params = msg.params ?? {};
 
-    if (
+    if (method === 'mcpServer/elicitation/request') {
+      const meta = params._meta ?? {};
+      const approvalKind = String(meta.codex_approval_kind ?? '');
+      // In plan mode, deny write-like MCP operations
+      if (this.planMode && (approvalKind.includes('write') || approvalKind.includes('edit') || approvalKind.includes('create') || approvalKind.includes('delete'))) {
+        console.log('[Codex] Plan mode: denying MCP elicitation:', approvalKind);
+        this.writeRaw({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { action: 'decline' },
+        });
+        this.emit('message', makeLobbyMessage(this.sessionId, 'tool_result',
+          `[Plan mode] Denied MCP: ${approvalKind}`,
+        ));
+      } else {
+        // Auto-approve read-only MCP operations
+        console.log('[Codex] MCP elicitation auto-approved:', approvalKind || method);
+        this.writeRaw({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { action: 'accept' },
+        });
+      }
+    } else if (
       method === 'item/commandExecution/requestApproval' ||
       method === 'item/fileChange/requestApproval'
     ) {
@@ -335,6 +480,32 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
       const toolInput = { ...params };
 
       console.log('[Codex] Approval requested:', toolName);
+
+      // Emit tool_use so the UI shows what tool is being called (real-time)
+      this.emit('message', makeLobbyMessage(
+        this.sessionId,
+        'tool_use',
+        JSON.stringify(toolInput, null, 2),
+        { toolName: typeof toolName === 'string' ? toolName : String(toolName) },
+      ));
+
+      // In plan mode, auto-deny all file changes and command executions
+      if (this.planMode) {
+        console.log('[Codex] Plan mode: auto-denying', toolName);
+        this.writeRaw({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { decision: 'decline' },
+        });
+        // Emit tool_result so the UI shows the denial clearly
+        this.emit('message', makeLobbyMessage(
+          this.sessionId,
+          'tool_result',
+          `[Plan mode] Denied: ${toolName}`,
+          { toolName: typeof toolName === 'string' ? toolName : String(toolName) },
+        ));
+        return;
+      }
 
       this.status = 'awaiting_approval';
       this.emit('message', makeLobbyMessage(this.sessionId, 'control', {
@@ -349,6 +520,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
       });
     } else {
       // Unknown server request — respond with error
+      console.warn('[Codex] Unknown server request:', method);
       this.writeRaw({
         jsonrpc: '2.0',
         id: msg.id,
@@ -406,29 +578,46 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
       case 'item.started':
       case 'item/started': {
         const item = params.item ?? params;
-        if (item.type === 'message' && item.role === 'assistant') {
-          // Extract text content
-          const textParts: string[] = [];
-          if (Array.isArray(item.content)) {
-            for (const block of item.content) {
-              if (block.type === 'output_text' || block.type === 'text') {
-                textParts.push(block.text ?? '');
-              }
-            }
-          }
-          if (textParts.length > 0) {
-            this.emit('message', makeLobbyMessage(
-              this.sessionId,
-              'assistant',
-              textParts.join(''),
-              { model: params.model },
-            ));
-          }
-        } else if (item.type === 'function_call') {
+        // Only emit tool_use on item/started; defer agentMessage to item/completed
+        if (item.type === 'function_call') {
           this.emit('message', makeLobbyMessage(
             this.sessionId,
             'tool_use',
             item.arguments ?? JSON.stringify(item.input ?? {}, null, 2),
+            { toolName: item.name ?? item.function?.name },
+          ));
+        } else if (item.type === 'mcpToolCall') {
+          // MCP tool call
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            JSON.stringify(item.arguments ?? {}, null, 2),
+            { toolName: `${item.server}/${item.tool}` },
+          ));
+        } else if (item.type === 'commandExecution') {
+          // Shell command execution
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            item.command ?? '',
+            { toolName: 'shell' },
+          ));
+        } else if (item.type === 'fileChange' || item.type === 'file_change') {
+          // File write/edit
+          const fileName = item.fileName ?? item.file ?? item.path ?? '';
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            JSON.stringify({ file: fileName, ...item }, null, 2),
+            { toolName: 'fileChange' },
+          ));
+        } else if (item.name || item.function?.name) {
+          // Catch-all: any item with a tool/function name
+          console.log('[Codex] Unrecognized item/started type:', item.type, item.name ?? item.function?.name);
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            JSON.stringify(item.arguments ?? item.input ?? {}, null, 2),
             { toolName: item.name ?? item.function?.name },
           ));
         }
@@ -438,31 +627,115 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
       case 'item.completed':
       case 'item/completed': {
         const item = params.item ?? params;
-        // Assistant message completion with full content
+
+        // Codex uses "agentMessage" with item.text for assistant replies
+        if (item.type === 'agentMessage') {
+          const text = item.text ?? extractTextFromContent(item.content);
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'assistant',
+            text || '(empty response)',
+            { model: params.model },
+          ));
+          break;
+        }
+
+        // Legacy format: type "message" + role "assistant"
         if (item.type === 'message' && item.role === 'assistant') {
-          const textParts: string[] = [];
-          if (Array.isArray(item.content)) {
-            for (const block of item.content) {
-              if (block.type === 'output_text' || block.type === 'text') {
-                textParts.push(block.text ?? '');
-              }
-            }
-          }
-          if (textParts.length > 0) {
+          const text = item.text ?? extractTextFromContent(item.content);
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'assistant',
+            text || '(empty response)',
+            { model: params.model },
+          ));
+          break;
+        }
+
+        // Function call completed — emit tool_use so the card always shows,
+        // even if item/started was not sent (e.g., auto-approved read operations)
+        if (item.type === 'function_call') {
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            item.arguments ?? JSON.stringify(item.input ?? {}, null, 2),
+            { toolName: item.name ?? item.function?.name },
+          ));
+          // Also emit tool_result if output is available
+          if (item.output != null) {
             this.emit('message', makeLobbyMessage(
               this.sessionId,
-              'assistant',
-              textParts.join(''),
-              { model: params.model },
+              'tool_result',
+              typeof item.output === 'string' ? item.output : JSON.stringify(item.output),
+              { toolName: item.name ?? item.function?.name },
             ));
           }
+          break;
         }
-        // Function call result
-        if (item.type === 'function_call_output' || item.output != null) {
+
+        // Function call result (standalone output without the function_call wrapper)
+        if (item.type === 'function_call_output') {
           this.emit('message', makeLobbyMessage(
             this.sessionId,
             'tool_result',
             typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? {}),
+          ));
+          break;
+        }
+
+        // Command execution completed
+        if (item.type === 'commandExecution') {
+          // Emit tool_use in case item/started was missed
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            item.command ?? '',
+            { toolName: 'shell' },
+          ));
+          // Emit tool_result with the output
+          const output = item.stdout ?? item.output ?? item.stderr ?? '';
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_result',
+            typeof output === 'string' ? output : JSON.stringify(output),
+            { toolName: 'shell' },
+          ));
+          break;
+        }
+
+        // File change completed
+        if (item.type === 'fileChange' || item.type === 'file_change') {
+          const fileName = item.fileName ?? item.file ?? item.path ?? '';
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            JSON.stringify({ file: fileName }, null, 2),
+            { toolName: 'fileChange' },
+          ));
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_result',
+            item.status === 'completed' ? `File updated: ${fileName}` : `File change: ${fileName} (${item.status ?? 'done'})`,
+            { toolName: 'fileChange' },
+          ));
+          break;
+        }
+
+        // MCP tool call completed — emit tool_use + tool_result
+        if (item.type === 'mcpToolCall') {
+          const toolName = `${item.server}/${item.tool}`;
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            JSON.stringify(item.arguments ?? {}, null, 2),
+            { toolName },
+          ));
+          const result = item.result ?? item.error?.message ?? '';
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_result',
+            typeof result === 'string' ? result : JSON.stringify(result),
+            { toolName },
           ));
         }
         break;
@@ -484,9 +757,32 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
         break;
       }
 
+      case 'item/agentMessage/delta': {
+        // New Codex CLI streaming format
+        const text = params.text ?? params.delta?.text ?? '';
+        if (text) {
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'stream_delta',
+            text,
+          ));
+        }
+        break;
+      }
+
+      case 'thread/status/changed':
+      case 'thread/tokenUsage/updated':
+      case 'account/rateLimits/updated':
+      case 'item/reasoning/summaryPartAdded':
+      case 'item/reasoning/summaryTextDelta':
+      case 'mcpServer/startupStatus/updated':
+      case 'mcpToolCall/progress':
+        // Ignore these notifications (status updates / reasoning internals)
+        break;
+
       default:
-        // Unknown notification — log and skip
-        console.log('[Codex] Unknown notification:', method);
+        // Unknown notification — log with params for debugging
+        console.log('[Codex] Unknown notification:', method, JSON.stringify(params).slice(0, 200));
         break;
     }
   }
@@ -532,6 +828,9 @@ export class CodexCliAdapter implements AgentAdapter {
       cwd: options?.cwd ?? process.cwd(),
       systemPrompt: options?.systemPrompt,
       model: options?.model,
+      mcpServers: options?.mcpServers,
+      apiKey: options?.apiKey,
+      permissionMode: options?.permissionMode,
     });
     await proc.init('resume', sessionId);
     if (options?.prompt) {
@@ -653,6 +952,8 @@ export class CodexCliAdapter implements AgentAdapter {
           const meta = this.extractCodexMeta(fullPath);
           if (!meta) continue;
           if (filterCwd && meta.cwd !== filterCwd) continue;
+          // Skip sessions with no meaningful content
+          if (meta.messageCount === 0 && !meta.lastMessage) continue;
 
           const stat = statSync(fullPath);
           results.push({
@@ -701,6 +1002,7 @@ export class CodexCliAdapter implements AgentAdapter {
       let cwd = '';
       let model: string | undefined;
       let messageCount = 0;
+      let lastMessage: string | undefined;
 
       for (const line of lines.slice(0, 10)) {
         try {
@@ -708,9 +1010,26 @@ export class CodexCliAdapter implements AgentAdapter {
           if (obj.session_id) sessionId = obj.session_id;
           if (obj.threadId) sessionId = obj.threadId;
           if (obj.thread?.id) sessionId = obj.thread.id;
+          // Codex JSONL session_meta format
+          if (obj.type === 'session_meta' && obj.payload?.id) {
+            sessionId = obj.payload.id;
+            if (obj.payload.cwd) cwd = obj.payload.cwd;
+            if (obj.payload.model) model = obj.payload.model;
+          }
           if (obj.cwd) cwd = obj.cwd;
           if (obj.model_provider || obj.model) model = obj.model ?? obj.model_provider;
-          if (obj.type === 'item.completed' || obj.type === 'turn.completed') messageCount++;
+          if (obj.type === 'item.completed' || obj.type === 'turn.completed'
+            || obj.type === 'event_msg') messageCount++;
+          // Extract user input as lastMessage for display/filtering
+          if (obj.type === 'turn.started' || obj.type === 'turn/started') {
+            const input = obj.params?.input ?? obj.input;
+            if (Array.isArray(input)) {
+              const textPart = input.find((p: { type: string }) => p.type === 'text');
+              if (textPart?.text) lastMessage = textPart.text.slice(0, 100);
+            } else if (typeof input === 'string') {
+              lastMessage = input.slice(0, 100);
+            }
+          }
         } catch {
           // skip malformed lines
         }
@@ -721,7 +1040,7 @@ export class CodexCliAdapter implements AgentAdapter {
         sessionId = basename(filePath, '.jsonl');
       }
 
-      return { sessionId, cwd, model, messageCount, displayName: undefined, lastMessage: undefined };
+      return { sessionId, cwd, model, messageCount, displayName: lastMessage?.slice(0, 30), lastMessage };
     } catch {
       return null;
     }
@@ -751,25 +1070,31 @@ export class CodexCliAdapter implements AgentAdapter {
       case 'item.started':
       case 'item.completed': {
         const item = obj.item ?? obj;
+        // Codex "userMessage" type
+        if (item.type === 'userMessage') {
+          const content = item.text ?? extractTextFromContent(item.content);
+          if (content) {
+            return [{ id, sessionId, timestamp, type: 'user', content }];
+          }
+        }
+        // Codex "agentMessage" type
+        if (item.type === 'agentMessage') {
+          const text = item.text ?? extractTextFromContent(item.content);
+          if (text) {
+            return [{ id, sessionId, timestamp, type: 'assistant', content: text }];
+          }
+        }
+        // Legacy: type "message" + role
         if (item.type === 'message' && item.role === 'user') {
-          const content = Array.isArray(item.content)
-            ? item.content.map((b: { text?: string }) => b.text ?? '').join('')
-            : '';
+          const content = item.text ?? extractTextFromContent(item.content);
           if (content) {
             return [{ id, sessionId, timestamp, type: 'user', content }];
           }
         }
         if (item.type === 'message' && item.role === 'assistant') {
-          const textParts: string[] = [];
-          if (Array.isArray(item.content)) {
-            for (const block of item.content) {
-              if (block.type === 'output_text' || block.type === 'text') {
-                textParts.push(block.text ?? '');
-              }
-            }
-          }
-          if (textParts.length > 0) {
-            return [{ id, sessionId, timestamp, type: 'assistant', content: textParts.join('') }];
+          const text = item.text ?? extractTextFromContent(item.content);
+          if (text) {
+            return [{ id, sessionId, timestamp, type: 'assistant', content: text }];
           }
         }
         if (item.type === 'function_call') {
@@ -818,6 +1143,54 @@ export class CodexCliAdapter implements AgentAdapter {
           content: obj.error ?? 'Turn failed',
           meta: { isError: true },
         }];
+
+      // === Codex JSONL format (session file on disk) ===
+
+      case 'session_meta': {
+        const payload = obj.payload ?? {};
+        return [makeLobbyMessage(sessionId, 'system', {
+          sessionId: payload.id ?? sessionId,
+          model: payload.model,
+        })];
+      }
+
+      case 'response_item': {
+        const payload = obj.payload ?? {};
+        if (payload.type === 'message' && payload.role === 'assistant') {
+          const text = payload.text ?? extractTextFromContent(payload.content);
+          if (text) return [{ id, sessionId, timestamp, type: 'assistant', content: text }];
+        }
+        if (payload.type === 'message' && (payload.role === 'user' || payload.role === 'developer')) {
+          const text = extractTextFromContent(payload.content);
+          if (text) return [{ id, sessionId, timestamp, type: 'user', content: text }];
+        }
+        if (payload.type === 'function_call') {
+          return [{
+            id, sessionId, timestamp, type: 'tool_use',
+            content: payload.arguments ?? JSON.stringify(payload.input ?? {}, null, 2),
+            meta: { toolName: payload.name },
+          }];
+        }
+        if (payload.type === 'function_call_output' || payload.output != null) {
+          return [{
+            id, sessionId, timestamp, type: 'tool_result',
+            content: typeof payload.output === 'string' ? payload.output : JSON.stringify(payload.output ?? {}),
+          }];
+        }
+        break;
+      }
+
+      case 'event_msg': {
+        const payload = obj.payload ?? {};
+        if (payload.type === 'task_complete' || payload.type === 'task_completed') {
+          return [{ id, sessionId, timestamp, type: 'result', content: 'Completed' }];
+        }
+        break;
+      }
+
+      case 'turn_context':
+        // Turn context metadata — skip
+        break;
     }
 
     return [];
