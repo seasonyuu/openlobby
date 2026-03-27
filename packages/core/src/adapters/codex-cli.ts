@@ -1,0 +1,825 @@
+import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
+import { spawn as spawnChild, execSync } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { createReadStream, existsSync, readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { createInterface } from 'node:readline';
+import { join, basename } from 'node:path';
+import { homedir } from 'node:os';
+import type {
+  AgentAdapter,
+  AgentProcess,
+  SpawnOptions,
+  ResumeOptions,
+  LobbyMessage,
+  SessionSummary,
+  ControlDecision,
+} from '../types.js';
+
+// ──────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────
+
+function makeLobbyMessage(
+  sessionId: string,
+  type: LobbyMessage['type'],
+  content: string | Record<string, unknown>,
+  meta?: LobbyMessage['meta'],
+): LobbyMessage {
+  return {
+    id: randomUUID(),
+    sessionId,
+    timestamp: Date.now(),
+    type,
+    content,
+    meta,
+  };
+}
+
+// ──────────────────────────────────────────────
+// CodexCliProcess
+// ──────────────────────────────────────────────
+
+/**
+ * Represents a running Codex CLI session via `codex app-server --stdio`.
+ *
+ * Communication: JSON-RPC 2.0 over stdin/stdout (NDJSON).
+ * The process is bidirectional:
+ *   - We send requests (thread/start, turn/start, etc.) with incrementing `id`.
+ *   - The server can send us requests (requestApproval) with its own `id`
+ *     that we must respond to.
+ */
+class CodexCliProcess extends EventEmitter implements AgentProcess {
+  sessionId: string;
+  readonly adapter = 'codex-cli';
+  status: AgentProcess['status'] = 'idle';
+
+  private childProcess: ChildProcess | null = null;
+  private rpcId = 0;
+  private pendingRpc = new Map<
+    number,
+    { resolve: (result: unknown) => void; reject: (err: Error) => void }
+  >();
+  private pendingControls = new Map<
+    string,
+    { rpcId: number; resolve: () => void }
+  >();
+  private threadId: string | null = null;
+  private initialized = false;
+  private lineBuffer = '';
+  private spawnOptions: SpawnOptions;
+
+  constructor(sessionId: string, options: SpawnOptions) {
+    super();
+    this.sessionId = sessionId;
+    this.spawnOptions = options;
+  }
+
+  /**
+   * Start the app-server child process, perform handshake, and optionally
+   * create or resume a thread.
+   */
+  async init(mode: 'spawn' | 'resume', resumeThreadId?: string): Promise<void> {
+    this.childProcess = spawnChild('codex', ['app-server', '--listen', 'stdio://'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: this.spawnOptions.cwd,
+      env: { ...process.env },
+    });
+
+    this.childProcess.stdout!.on('data', (chunk: Buffer) => {
+      this.handleStdoutChunk(chunk.toString('utf-8'));
+    });
+
+    this.childProcess.stderr!.on('data', (chunk: Buffer) => {
+      console.error('[Codex stderr]', chunk.toString('utf-8'));
+    });
+
+    this.childProcess.on('exit', (code) => {
+      console.log(`[Codex] Process exited with code ${code}`);
+      this.status = code === 0 ? 'stopped' : 'error';
+      this.childProcess = null;
+      this.emit('exit', code ?? 1);
+    });
+
+    this.childProcess.on('error', (err) => {
+      console.error('[Codex] Process error:', err);
+      this.status = 'error';
+      this.emit('error', err);
+    });
+
+    // === Initialization handshake ===
+    try {
+      await this.sendRpc('initialize', {
+        clientInfo: {
+          name: 'agent-lobby',
+          title: 'AgentLobby',
+          version: '0.1.0',
+        },
+      });
+      // Send `initialized` notification (no id → notification)
+      this.sendNotification('initialized', {});
+      this.initialized = true;
+      console.log('[Codex] Handshake complete');
+    } catch (err) {
+      console.error('[Codex] Handshake failed:', err);
+      this.kill();
+      throw err;
+    }
+
+    // === Start or resume thread ===
+    try {
+      if (mode === 'resume' && resumeThreadId) {
+        const result = await this.sendRpc('thread/resume', {
+          threadId: resumeThreadId,
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.threadId = (result as any)?.thread?.id ?? resumeThreadId;
+        this.sessionId = this.threadId!;
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const params: any = {
+          cwd: this.spawnOptions.cwd,
+          approvalPolicy: this.mapPermissionMode(this.spawnOptions.permissionMode),
+        };
+        if (this.spawnOptions.model) {
+          params.model = this.spawnOptions.model;
+        }
+        if (this.spawnOptions.systemPrompt) {
+          params.instructions = this.spawnOptions.systemPrompt;
+        }
+        const result = await this.sendRpc('thread/start', params);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.threadId = (result as any)?.thread?.id ?? null;
+        if (this.threadId) {
+          this.sessionId = this.threadId;
+        }
+      }
+
+      this.status = 'idle';
+      this.emit('message', makeLobbyMessage(this.sessionId, 'system', {
+        sessionId: this.sessionId,
+        threadId: this.threadId,
+        adapter: 'codex-cli',
+      }));
+
+      // If an initial prompt was provided, send it
+      if (mode === 'spawn' && this.spawnOptions.prompt) {
+        this.sendMessage(this.spawnOptions.prompt);
+      }
+    } catch (err) {
+      console.error('[Codex] Thread start/resume failed:', err);
+      this.emit('message', makeLobbyMessage(this.sessionId, 'system', {
+        error: err instanceof Error ? err.message : String(err),
+      }, { isError: true }));
+      this.status = 'error';
+      this.emit('error', err instanceof Error ? err : new Error(String(err)));
+    }
+  }
+
+  // ── Public API (AgentProcess) ──
+
+  sendMessage(content: string): void {
+    if (!this.initialized || !this.threadId) {
+      console.warn('[Codex] Not ready to send message');
+      return;
+    }
+
+    this.status = 'running';
+    console.log('[Codex] Sending turn/start:', content.slice(0, 100));
+
+    this.sendRpc('turn/start', {
+      threadId: this.threadId,
+      input: [{ type: 'text', text: content, text_elements: [] }],
+    }).catch((err) => {
+      console.error('[Codex] turn/start failed:', err);
+      this.status = 'error';
+      this.emit('message', makeLobbyMessage(this.sessionId, 'system', {
+        error: err instanceof Error ? err.message : String(err),
+      }, { isError: true }));
+    });
+  }
+
+  respondControl(requestId: string, decision: ControlDecision): void {
+    const pending = this.pendingControls.get(requestId);
+    if (!pending) {
+      console.warn('[Codex] No pending control for:', requestId);
+      return;
+    }
+
+    console.log('[Codex] Control response:', requestId, decision);
+    this.pendingControls.delete(requestId);
+
+    // Send JSON-RPC response to the server-initiated request
+    const response = decision === 'allow'
+      ? { accept: {} }
+      : { decline: {} };
+
+    this.writeRaw({
+      jsonrpc: '2.0',
+      id: pending.rpcId,
+      result: response,
+    });
+
+    pending.resolve();
+  }
+
+  updateOptions(opts: Partial<SpawnOptions>): void {
+    Object.assign(this.spawnOptions, opts);
+    console.log('[Codex] Options updated:', Object.keys(opts));
+  }
+
+  kill(): void {
+    console.log('[Codex] Killing process');
+    if (this.childProcess) {
+      this.childProcess.kill();
+      this.childProcess = null;
+    }
+    this.status = 'stopped';
+    this.emit('exit', 0);
+  }
+
+  // ── JSON-RPC transport ──
+
+  private nextId(): number {
+    return ++this.rpcId;
+  }
+
+  private sendRpc(method: string, params: unknown): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId();
+      this.pendingRpc.set(id, { resolve, reject });
+      this.writeRaw({ jsonrpc: '2.0', id, method, params });
+
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        if (this.pendingRpc.has(id)) {
+          this.pendingRpc.delete(id);
+          reject(new Error(`RPC timeout: ${method} (id=${id})`));
+        }
+      }, 30000);
+    });
+  }
+
+  private sendNotification(method: string, params: unknown): void {
+    this.writeRaw({ jsonrpc: '2.0', method, params });
+  }
+
+  private writeRaw(obj: unknown): void {
+    if (!this.childProcess?.stdin?.writable) {
+      console.warn('[Codex] stdin not writable');
+      return;
+    }
+    const line = JSON.stringify(obj) + '\n';
+    this.childProcess.stdin.write(line);
+  }
+
+  // ── NDJSON parsing from stdout ──
+
+  private handleStdoutChunk(chunk: string): void {
+    this.lineBuffer += chunk;
+    const lines = this.lineBuffer.split('\n');
+    // Keep the last incomplete line in the buffer
+    this.lineBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const msg = JSON.parse(line);
+        this.handleJsonRpcMessage(msg);
+      } catch {
+        console.warn('[Codex] Failed to parse line:', line.slice(0, 200));
+      }
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleJsonRpcMessage(msg: any): void {
+    // === Response to our request ===
+    if (msg.id != null && !msg.method) {
+      const pending = this.pendingRpc.get(msg.id);
+      if (pending) {
+        this.pendingRpc.delete(msg.id);
+        if (msg.error) {
+          pending.reject(new Error(msg.error.message ?? JSON.stringify(msg.error)));
+        } else {
+          pending.resolve(msg.result);
+        }
+      }
+      return;
+    }
+
+    // === Server-initiated request (has method + id) ===
+    if (msg.method && msg.id != null) {
+      this.handleServerRequest(msg);
+      return;
+    }
+
+    // === Notification (has method, no id) ===
+    if (msg.method) {
+      this.handleNotification(msg);
+      return;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleServerRequest(msg: any): void {
+    const method = msg.method as string;
+    const params = msg.params ?? {};
+
+    if (
+      method === 'item/commandExecution/requestApproval' ||
+      method === 'item/fileChange/requestApproval'
+    ) {
+      const requestId = randomUUID();
+      const toolName = params.command ?? params.fileName ?? method;
+      const toolInput = { ...params };
+
+      console.log('[Codex] Approval requested:', toolName);
+
+      this.status = 'awaiting_approval';
+      this.emit('message', makeLobbyMessage(this.sessionId, 'control', {
+        requestId,
+        toolName: typeof toolName === 'string' ? toolName : String(toolName),
+        toolInput,
+      }));
+
+      this.pendingControls.set(requestId, {
+        rpcId: msg.id,
+        resolve: () => {},
+      });
+    } else {
+      // Unknown server request — respond with error
+      this.writeRaw({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: { code: -32601, message: `Unknown method: ${method}` },
+      });
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private handleNotification(msg: any): void {
+    const method = msg.method as string;
+    const params = msg.params ?? {};
+
+    switch (method) {
+      case 'thread.started':
+      case 'thread/started':
+        if (params.threadId || params.thread?.id) {
+          this.threadId = params.threadId ?? params.thread?.id;
+          if (this.threadId) this.sessionId = this.threadId;
+        }
+        break;
+
+      case 'turn.started':
+      case 'turn/started':
+        this.status = 'running';
+        break;
+
+      case 'turn.completed':
+      case 'turn/completed': {
+        this.status = 'idle';
+        const usage = params.usage ?? params.stats;
+        this.emit('message', makeLobbyMessage(this.sessionId, 'result', {
+          subtype: 'success',
+          durationMs: params.duration_ms,
+        }, {
+          tokenUsage: usage
+            ? { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0 }
+            : undefined,
+          costUsd: usage?.cost_usd,
+        }));
+        this.emit('idle');
+        break;
+      }
+
+      case 'turn.failed':
+      case 'turn/failed':
+        this.status = 'idle';
+        this.emit('message', makeLobbyMessage(this.sessionId, 'result', {
+          subtype: 'error',
+          error: params.error ?? 'Turn failed',
+        }, { isError: true }));
+        this.emit('idle');
+        break;
+
+      case 'item.started':
+      case 'item/started': {
+        const item = params.item ?? params;
+        if (item.type === 'message' && item.role === 'assistant') {
+          // Extract text content
+          const textParts: string[] = [];
+          if (Array.isArray(item.content)) {
+            for (const block of item.content) {
+              if (block.type === 'output_text' || block.type === 'text') {
+                textParts.push(block.text ?? '');
+              }
+            }
+          }
+          if (textParts.length > 0) {
+            this.emit('message', makeLobbyMessage(
+              this.sessionId,
+              'assistant',
+              textParts.join(''),
+              { model: params.model },
+            ));
+          }
+        } else if (item.type === 'function_call') {
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_use',
+            item.arguments ?? JSON.stringify(item.input ?? {}, null, 2),
+            { toolName: item.name ?? item.function?.name },
+          ));
+        }
+        break;
+      }
+
+      case 'item.completed':
+      case 'item/completed': {
+        const item = params.item ?? params;
+        // Assistant message completion with full content
+        if (item.type === 'message' && item.role === 'assistant') {
+          const textParts: string[] = [];
+          if (Array.isArray(item.content)) {
+            for (const block of item.content) {
+              if (block.type === 'output_text' || block.type === 'text') {
+                textParts.push(block.text ?? '');
+              }
+            }
+          }
+          if (textParts.length > 0) {
+            this.emit('message', makeLobbyMessage(
+              this.sessionId,
+              'assistant',
+              textParts.join(''),
+              { model: params.model },
+            ));
+          }
+        }
+        // Function call result
+        if (item.type === 'function_call_output' || item.output != null) {
+          this.emit('message', makeLobbyMessage(
+            this.sessionId,
+            'tool_result',
+            typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? {}),
+          ));
+        }
+        break;
+      }
+
+      case 'item/streaming': {
+        // Streaming text delta
+        const delta = params.delta ?? params;
+        if (delta.type === 'output_text_delta' || delta.type === 'content_part_delta') {
+          const text = delta.text ?? delta.delta?.text ?? '';
+          if (text) {
+            this.emit('message', makeLobbyMessage(
+              this.sessionId,
+              'stream_delta',
+              text,
+            ));
+          }
+        }
+        break;
+      }
+
+      default:
+        // Unknown notification — log and skip
+        console.log('[Codex] Unknown notification:', method);
+        break;
+    }
+  }
+
+  private mapPermissionMode(mode?: string): string {
+    switch (mode) {
+      case 'bypassPermissions': return 'never';
+      case 'dontAsk': return 'never';
+      case 'plan': return 'on-request';
+      default: return 'on-request';
+    }
+  }
+}
+
+// ──────────────────────────────────────────────
+// CodexCliAdapter
+// ──────────────────────────────────────────────
+
+export class CodexCliAdapter implements AgentAdapter {
+  readonly name = 'codex-cli';
+  readonly displayName = 'Codex CLI';
+
+  async detect(): Promise<{ installed: boolean; version?: string; path?: string }> {
+    try {
+      const version = execSync('codex --version', { encoding: 'utf-8' }).trim();
+      const cliPath = execSync('which codex', { encoding: 'utf-8' }).trim();
+      return { installed: true, version, path: cliPath };
+    } catch {
+      return { installed: false };
+    }
+  }
+
+  async spawn(options: SpawnOptions): Promise<AgentProcess> {
+    const sessionId = randomUUID();
+    console.log('[CodexAdapter] Spawning session:', sessionId);
+    const proc = new CodexCliProcess(sessionId, options);
+    await proc.init('spawn');
+    return proc;
+  }
+
+  async resume(sessionId: string, options?: ResumeOptions): Promise<AgentProcess> {
+    const proc = new CodexCliProcess(sessionId, {
+      cwd: options?.cwd ?? process.cwd(),
+      systemPrompt: options?.systemPrompt,
+      model: options?.model,
+    });
+    await proc.init('resume', sessionId);
+    if (options?.prompt) {
+      proc.sendMessage(options.prompt);
+    }
+    return proc;
+  }
+
+  getSessionStoragePath(): string {
+    return join(homedir(), '.codex', 'sessions');
+  }
+
+  async readSessionHistory(sessionId: string): Promise<LobbyMessage[]> {
+    const jsonlPath = this.findSessionJsonl(sessionId);
+    if (!jsonlPath) return [];
+
+    const messages: LobbyMessage[] = [];
+    const rl = createInterface({
+      input: createReadStream(jsonlPath, { encoding: 'utf-8' }),
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line);
+        const converted = this.jsonlLineToLobbyMessages(sessionId, obj);
+        messages.push(...converted);
+      } catch {
+        // skip malformed lines
+      }
+    }
+
+    return messages;
+  }
+
+  async discoverSessions(filterCwd?: string): Promise<SessionSummary[]> {
+    const storagePath = this.getSessionStoragePath();
+    if (!existsSync(storagePath)) return [];
+
+    const results: SessionSummary[] = [];
+    // Codex stores sessions in YYYY/MM/DD/ directories
+    this.walkSessionDirs(storagePath, results, filterCwd);
+    results.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    return results;
+  }
+
+  getResumeCommand(sessionId: string): string {
+    return `codex --resume ${sessionId}`;
+  }
+
+  // ── Private helpers ──
+
+  private findSessionJsonl(sessionId: string): string | null {
+    const storagePath = this.getSessionStoragePath();
+    if (!existsSync(storagePath)) return null;
+
+    // Walk through YYYY/MM/DD/ dirs looking for the session
+    try {
+      return this.walkForSession(storagePath, sessionId);
+    } catch {
+      return null;
+    }
+  }
+
+  private walkForSession(dir: string, sessionId: string): string | null {
+    const names = readdirSync(dir);
+    for (const name of names) {
+      const fullPath = join(dir, name);
+      try {
+        const s = statSync(fullPath);
+        if (s.isDirectory()) {
+          const found = this.walkForSession(fullPath, sessionId);
+          if (found) return found;
+        } else if (name.endsWith('.jsonl')) {
+          if (name.includes(sessionId)) return fullPath;
+          // Also check first line for session_id
+          try {
+            const firstLine = execSync(`head -1 "${fullPath}"`, { encoding: 'utf-8' });
+            const obj = JSON.parse(firstLine);
+            if (obj.session_id === sessionId || obj.threadId === sessionId) {
+              return fullPath;
+            }
+          } catch {
+            // skip
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  private walkSessionDirs(
+    dir: string,
+    results: SessionSummary[],
+    filterCwd?: string,
+  ): void {
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+
+    for (const name of names) {
+      const fullPath = join(dir, name);
+      try {
+        const s = statSync(fullPath);
+        if (s.isDirectory()) {
+          this.walkSessionDirs(fullPath, results, filterCwd);
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (name.endsWith('.jsonl')) {
+        try {
+          const meta = this.extractCodexMeta(fullPath);
+          if (!meta) continue;
+          if (filterCwd && meta.cwd !== filterCwd) continue;
+
+          const stat = statSync(fullPath);
+          results.push({
+            id: meta.sessionId,
+            adapterName: this.name,
+            displayName: meta.displayName || meta.sessionId.slice(0, 8),
+            status: 'stopped',
+            lastActiveAt: stat.mtimeMs,
+            lastMessage: meta.lastMessage,
+            messageCount: meta.messageCount,
+            model: meta.model,
+            cwd: meta.cwd || '',
+            origin: 'cli',
+            resumeCommand: this.getResumeCommand(meta.sessionId),
+            jsonlPath: fullPath,
+          });
+        } catch {
+          // skip unreadable files
+        }
+      }
+    }
+  }
+
+  /**
+   * Synchronously read the first few lines of a Codex JSONL to extract metadata.
+   */
+  private extractCodexMeta(filePath: string): {
+    sessionId: string;
+    cwd: string;
+    model?: string;
+    displayName?: string;
+    lastMessage?: string;
+    messageCount: number;
+  } | null {
+    try {
+      // Read first 4KB to get header info
+      const fd = openSync(filePath, 'r');
+      const buf = Buffer.alloc(4096);
+      const bytesRead = readSync(fd, buf, 0, 4096, 0);
+      closeSync(fd);
+
+      const content = buf.toString('utf-8', 0, bytesRead);
+      const lines = content.split('\n').filter((l: string) => l.trim());
+
+      let sessionId: string | null = null;
+      let cwd = '';
+      let model: string | undefined;
+      let messageCount = 0;
+
+      for (const line of lines.slice(0, 10)) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.session_id) sessionId = obj.session_id;
+          if (obj.threadId) sessionId = obj.threadId;
+          if (obj.thread?.id) sessionId = obj.thread.id;
+          if (obj.cwd) cwd = obj.cwd;
+          if (obj.model_provider || obj.model) model = obj.model ?? obj.model_provider;
+          if (obj.type === 'item.completed' || obj.type === 'turn.completed') messageCount++;
+        } catch {
+          // skip malformed lines
+        }
+      }
+
+      if (!sessionId) {
+        // Use filename as session ID fallback
+        sessionId = basename(filePath, '.jsonl');
+      }
+
+      return { sessionId, cwd, model, messageCount, displayName: undefined, lastMessage: undefined };
+    } catch {
+      return null;
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private jsonlLineToLobbyMessages(sessionId: string, obj: any): LobbyMessage[] {
+    const type = obj.type as string | undefined;
+    const timestamp = obj.timestamp ? new Date(obj.timestamp).getTime() : Date.now();
+    const id = obj.id ?? obj.itemId ?? randomUUID();
+
+    if (!type) {
+      // First line might be session header
+      if (obj.session_id || obj.threadId) {
+        return [makeLobbyMessage(sessionId, 'system', {
+          sessionId: obj.session_id ?? obj.threadId,
+          model: obj.model,
+        })];
+      }
+      return [];
+    }
+
+    switch (type) {
+      case 'thread.started':
+        return [makeLobbyMessage(sessionId, 'system', { threadId: obj.threadId ?? '' })];
+
+      case 'item.started':
+      case 'item.completed': {
+        const item = obj.item ?? obj;
+        if (item.type === 'message' && item.role === 'user') {
+          const content = Array.isArray(item.content)
+            ? item.content.map((b: { text?: string }) => b.text ?? '').join('')
+            : '';
+          if (content) {
+            return [{ id, sessionId, timestamp, type: 'user', content }];
+          }
+        }
+        if (item.type === 'message' && item.role === 'assistant') {
+          const textParts: string[] = [];
+          if (Array.isArray(item.content)) {
+            for (const block of item.content) {
+              if (block.type === 'output_text' || block.type === 'text') {
+                textParts.push(block.text ?? '');
+              }
+            }
+          }
+          if (textParts.length > 0) {
+            return [{ id, sessionId, timestamp, type: 'assistant', content: textParts.join('') }];
+          }
+        }
+        if (item.type === 'function_call') {
+          return [{
+            id,
+            sessionId,
+            timestamp,
+            type: 'tool_use',
+            content: item.arguments ?? JSON.stringify(item.input ?? {}, null, 2),
+            meta: { toolName: item.name ?? item.function?.name },
+          }];
+        }
+        if (item.type === 'function_call_output' || item.output != null) {
+          return [{
+            id,
+            sessionId,
+            timestamp,
+            type: 'tool_result',
+            content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output ?? {}),
+          }];
+        }
+        break;
+      }
+
+      case 'turn.completed':
+        return [{
+          id,
+          sessionId,
+          timestamp,
+          type: 'result',
+          content: 'Completed',
+          meta: {
+            tokenUsage: obj.usage
+              ? { input: obj.usage.input_tokens ?? 0, output: obj.usage.output_tokens ?? 0 }
+              : undefined,
+            costUsd: obj.usage?.cost_usd,
+          },
+        }];
+
+      case 'turn.failed':
+        return [{
+          id,
+          sessionId,
+          timestamp,
+          type: 'result',
+          content: obj.error ?? 'Turn failed',
+          meta: { isError: true },
+        }];
+    }
+
+    return [];
+  }
+}
