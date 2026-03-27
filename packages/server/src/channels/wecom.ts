@@ -116,6 +116,12 @@ export class WeComBotProvider implements ChannelProvider {
         streamId: generateReqId('stream'),
       });
 
+      // Detect quote/reply message
+      const quote = parseQuoteMessage(body);
+      const messageText = quote
+        ? `> ${quote.text}\n\n${body.text.content}`
+        : body.text.content;
+
       router.handleInbound({
         externalMessageId: body.msgid,
         identity: {
@@ -123,8 +129,9 @@ export class WeComBotProvider implements ChannelProvider {
           accountId: this.accountId,
           peerId,
         },
-        text: body.text.content,
+        text: messageText,
         timestamp: (body.create_time ?? Date.now() / 1000) * 1000,
+        quote: quote ?? undefined,
         raw: frame,
       }).catch((err) => this.log('error', 'handleInbound error:', err));
     });
@@ -154,6 +161,65 @@ export class WeComBotProvider implements ChannelProvider {
         timestamp: (body.create_time ?? Date.now() / 1000) * 1000,
         raw: frame,
       }).catch((err) => this.log('error', 'voice handleInbound error:', err));
+    });
+
+    // Image messages
+    this.client.on('message.image', (frame) => {
+      if (!frame.body) return;
+      const body = frame.body;
+      if (this.isDuplicate(body.msgid)) return;
+
+      const peerId = body.from.userid;
+      this.log('info', `Image from ${peerId}`);
+
+      this.pendingReplies.set(peerId, {
+        frame: { headers: frame.headers },
+        streamId: generateReqId('stream'),
+      });
+
+      const imageUrl = body.image?.url || (body.image as any)?.media_id;
+      router.handleInbound({
+        externalMessageId: body.msgid,
+        identity: {
+          channelName: 'wecom',
+          accountId: this.accountId,
+          peerId,
+        },
+        text: '[图片]',
+        timestamp: (body.create_time ?? Date.now() / 1000) * 1000,
+        attachments: imageUrl ? [{ type: 'image', url: imageUrl }] : undefined,
+        raw: frame,
+      }).catch((err) => this.log('error', 'image handleInbound error:', err));
+    });
+
+    // Mixed content messages (图文混排)
+    this.client.on('message.mixed', (frame) => {
+      if (!frame.body) return;
+      const body = frame.body;
+      if (this.isDuplicate(body.msgid)) return;
+
+      const peerId = body.from.userid;
+      this.log('info', `Mixed message from ${peerId}`);
+
+      this.pendingReplies.set(peerId, {
+        frame: { headers: frame.headers },
+        streamId: generateReqId('stream'),
+      });
+
+      const { text, attachments } = parseMixedContent(body);
+
+      router.handleInbound({
+        externalMessageId: body.msgid,
+        identity: {
+          channelName: 'wecom',
+          accountId: this.accountId,
+          peerId,
+        },
+        text: text || '[图文消息]',
+        timestamp: (body.create_time ?? Date.now() / 1000) * 1000,
+        attachments: attachments.length > 0 ? attachments : undefined,
+        raw: frame,
+      }).catch((err) => this.log('error', 'mixed handleInbound error:', err));
     });
 
     // Template card events (inline approval callbacks)
@@ -310,10 +376,17 @@ export class WeComBotProvider implements ChannelProvider {
 
       case 'message':
       default: {
+        // Parse media directives (MEDIA:<path>, FILE:<path>)
+        const { cleanText: messageText, mediaPaths } = parseMediaDirectives(msg.text);
+        if (mediaPaths.length > 0) {
+          this.log('info', `Found ${mediaPaths.length} media directive(s), paths: ${mediaPaths.map(m => m.path).join(', ')}`);
+        }
+        const effectiveText = messageText || msg.text;
+
         const pending = this.pendingReplies.get(peerId);
         if (pending) {
           try {
-            const chunks = splitText(msg.text, MAX_REPLY_BYTES);
+            const chunks = splitText(effectiveText, MAX_REPLY_BYTES);
             for (let i = 0; i < chunks.length; i++) {
               const isLast = i === chunks.length - 1;
               await this.client.replyStream(pending.frame, pending.streamId, chunks[i], isLast);
@@ -409,6 +482,67 @@ export class WeComBotProvider implements ChannelProvider {
       if (ts < cutoff) this.seenMessages.delete(key);
     }
   }
+}
+
+/** Parse mixed content message into text + image attachments */
+function parseMixedContent(body: Record<string, any>): {
+  text: string;
+  attachments: Array<{ type: 'image' | 'file'; url?: string; filename?: string }>;
+} {
+  const textParts: string[] = [];
+  const attachments: Array<{ type: 'image' | 'file'; url?: string; filename?: string }> = [];
+
+  // WeCom mixed messages may have items in body.mixed.items or body.content
+  const items: any[] = body.mixed?.items ?? body.content?.items ?? [];
+  for (const item of items) {
+    if (item.type === 'text' && item.content) {
+      textParts.push(item.content);
+    } else if (item.type === 'image') {
+      const url = item.url ?? item.media_id;
+      if (url) attachments.push({ type: 'image', url });
+    } else if (item.type === 'file') {
+      attachments.push({
+        type: 'file',
+        url: item.url ?? item.media_id,
+        filename: item.filename,
+      });
+    }
+  }
+
+  return { text: textParts.join('\n'), attachments };
+}
+
+/** Extract quote/reply context from a WeCom text message */
+function parseQuoteMessage(body: Record<string, any>): {
+  text: string;
+  senderId?: string;
+  timestamp?: number;
+} | null {
+  // WeCom quote messages include a quote field in the body
+  const quote = body.text?.quote ?? body.quote;
+  if (!quote) return null;
+
+  return {
+    text: typeof quote === 'string' ? quote : (quote.content ?? quote.text ?? ''),
+    senderId: quote.from?.userid,
+    timestamp: quote.create_time ? quote.create_time * 1000 : undefined,
+  };
+}
+
+/** Parse MEDIA: and FILE: directives from outbound text */
+function parseMediaDirectives(text: string): {
+  cleanText: string;
+  mediaPaths: Array<{ type: 'media' | 'file'; path: string }>;
+} {
+  const mediaPaths: Array<{ type: 'media' | 'file'; path: string }> = [];
+  const cleanText = text.replace(/(?:MEDIA|FILE):(\S+)/g, (match, path) => {
+    mediaPaths.push({
+      type: match.startsWith('FILE') ? 'file' : 'media',
+      path,
+    });
+    return '';
+  }).trim();
+  return { cleanText, mediaPaths };
 }
 
 /** Split text into chunks that fit within byte limit */

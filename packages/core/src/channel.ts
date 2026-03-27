@@ -39,6 +39,12 @@ export interface InboundChannelMessage {
   callbackData?: string;
   /** 原始平台消息对象 */
   raw?: unknown;
+  /** Quoted/replied message context */
+  quote?: {
+    text: string;
+    senderId?: string;
+    timestamp?: number;
+  };
 }
 
 /** 出站消息（OpenLobby → IM） */
@@ -57,6 +63,15 @@ export interface OutboundChannelMessage {
   actions?: Array<{
     label: string;
     callbackData: string;
+  }>;
+  /** Media attachments */
+  attachments?: Array<{
+    type: 'image' | 'file' | 'voice' | 'video';
+    path?: string;
+    url?: string;
+    base64?: string;
+    filename?: string;
+    mimeType?: string;
   }>;
 }
 
