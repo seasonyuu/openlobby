@@ -123,3 +123,18 @@ export interface ChannelProvider {
 export interface ChannelRouter {
   handleInbound(msg: InboundChannelMessage): Promise<void>;
 }
+
+/** Channel plugin module contract — npm packages export this shape */
+export interface ChannelPluginModule {
+  createProvider(config: ChannelProviderConfig): ChannelProvider;
+  readonly channelName: string;
+  readonly displayName: string;
+}
+
+/** Discovered plugin metadata */
+export interface ChannelPluginInfo {
+  channelName: string;
+  displayName: string;
+  packageName: string;
+  version?: string;
+}

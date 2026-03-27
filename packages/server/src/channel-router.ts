@@ -103,7 +103,7 @@ export class ChannelRouterImpl implements ChannelRouter {
     if (config.enabled !== false) {
       await this.unregisterProvider(id);
       try {
-        const provider = createProvider(config);
+        const provider = await createProvider(config);
         await this.registerProvider(provider);
       } catch (err) {
         console.error(`[ChannelRouter] Failed to start provider ${id}:`, err);
@@ -125,7 +125,7 @@ export class ChannelRouterImpl implements ChannelRouter {
         try {
           const config = JSON.parse(row.config_json) as ChannelProviderConfig;
           await this.unregisterProvider(providerId);
-          const provider = createProvider(config);
+          const provider = await createProvider(config);
           await this.registerProvider(provider);
         } catch (err) {
           console.error(`[ChannelRouter] Failed to start provider ${providerId}:`, err);

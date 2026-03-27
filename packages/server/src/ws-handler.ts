@@ -188,6 +188,13 @@ export function handleWebSocket(
 
         // ─── Channel Messages ───────────────────────────────
 
+        case 'channel.discover-plugins': {
+          const { discoverPlugins } = await import('./channels/plugin-discovery.js');
+          const plugins = await discoverPlugins();
+          socket.send(JSON.stringify({ type: 'channel.plugins-list', plugins }));
+          break;
+        }
+
         case 'channel.list-providers': {
           if (channelRouter) {
             send({ type: 'channel.providers-list', providers: channelRouter.listProviders() });

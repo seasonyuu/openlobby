@@ -83,7 +83,7 @@ export async function createServer(options: ServerOptions = {}) {
     if (!row.enabled) continue;
     try {
       const config = JSON.parse(row.config_json);
-      const provider = createProvider(config);
+      const provider = await createProvider(config);
       await channelRouter.registerProvider(provider);
       // Register webhook routes if any
       const handlers = provider.getWebhookHandlers?.() ?? [];

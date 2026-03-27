@@ -10,6 +10,7 @@ import type {
   ChannelProviderConfig,
   ChannelProviderInfo,
   ChannelBinding,
+  ChannelPluginInfo,
 } from './channel.js';
 
 /** 前端 → 后端 */
@@ -45,7 +46,8 @@ export type ClientMessage =
   | { type: 'channel.unbind'; identityKey: string }
   | { type: 'session.plan-mode'; sessionId: string; enabled: boolean }
   | { type: 'session.recover'; sessionId: string }
-  | { type: 'completion.request'; sessionId: string };
+  | { type: 'completion.request'; sessionId: string }
+  | { type: 'channel.discover-plugins' };
 
 /** 后端 → 前端 */
 export type ServerMessage =
@@ -73,4 +75,5 @@ export type ServerMessage =
   | { type: 'channel.bindings-list'; bindings: ChannelBinding[] }
   | { type: 'channel.binding-updated'; binding: ChannelBinding }
   | { type: 'channel.binding-removed'; identityKey: string }
-  | { type: 'completion.response'; sessionId: string; commands: AdapterCommand[] };
+  | { type: 'completion.response'; sessionId: string; commands: AdapterCommand[] }
+  | { type: 'channel.plugins-list'; plugins: ChannelPluginInfo[] };

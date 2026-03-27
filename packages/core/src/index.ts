@@ -23,6 +23,8 @@ export type {
   ChannelBinding,
   ChannelProvider,
   ChannelRouter,
+  ChannelPluginModule,
+  ChannelPluginInfo,
 } from './channel.js';
 export { toIdentityKey } from './channel.js';
 
