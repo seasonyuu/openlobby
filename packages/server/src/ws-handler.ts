@@ -1,8 +1,9 @@
 import type { WebSocket } from '@fastify/websocket';
-import type { ClientMessage, ServerMessage, LobbyMessage } from '@openlobby/core';
+import type { ClientMessage, ServerMessage, LobbyMessage, AdapterCommand } from '@openlobby/core';
 import type { SessionManager } from './session-manager.js';
 import type { LobbyManager } from './lobby-manager.js';
 import type { ChannelRouterImpl } from './channel-router.js';
+import { handleSlashCommand } from './slash-commands.js';
 
 export function handleWebSocket(
   socket: WebSocket,
@@ -42,6 +43,11 @@ export function handleWebSocket(
   // Forward navigate events to this client
   sessionManager.onNavigate(listenerId, (sessionId) => {
     send({ type: 'session.navigate', sessionId });
+  });
+
+  // Forward commands updates to this client (fresh SDK results)
+  sessionManager.onCommands(listenerId, (sessionId: string, commands: AdapterCommand[]) => {
+    send({ type: 'completion.response', sessionId, commands, cached: false });
   });
 
   // Notify client of Lobby Manager availability and session ID
@@ -87,6 +93,37 @@ export function handleWebSocket(
         }
 
         case 'message.send': {
+          // Intercept slash commands for LM session — handle locally
+          const lmId = lobbyManager?.getSessionId();
+          if (lmId && data.sessionId === lmId && data.content.trim().startsWith('/')) {
+            const result = await handleSlashCommand(data.content.trim(), {
+              sessionManager,
+              lmSessionId: lmId,
+            });
+            if (result) {
+              // Send response as assistant message in the LM session
+              const replyMsg: LobbyMessage = {
+                id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                sessionId: lmId,
+                timestamp: Date.now(),
+                type: 'assistant',
+                content: result.text,
+              };
+              send({ type: 'message', sessionId: lmId, message: replyMsg });
+
+              // Handle side effects
+              if (result.navigateSessionId) {
+                sessionManager.broadcastNavigate(result.navigateSessionId);
+              }
+              if (result.destroyedSessionId) {
+                channelRouter?.handleSessionDestroyed(result.destroyedSessionId);
+                send({ type: 'session.destroyed', sessionId: result.destroyedSessionId });
+              }
+              break;
+            }
+            // null = unknown command, fall through to send as message
+          }
+
           channelRouter?.setMessageOrigin(data.sessionId, 'web');
           await sessionManager.sendMessage(data.sessionId, data.content);
           break;
@@ -172,15 +209,22 @@ export function handleWebSocket(
         }
 
         case 'completion.request': {
-          const adapter = sessionManager.getAdapterForSession(data.sessionId as string);
-          const commands = adapter?.listCommands
-            ? await adapter.listCommands()
-            : [];
-          socket.send(JSON.stringify({
-            type: 'completion.response',
-            sessionId: data.sessionId,
-            commands,
-          }));
+          const reqSessionId = data.sessionId as string;
+          // Return cached commands from SQLite if available
+          const cached = sessionManager.getCachedCommands(reqSessionId);
+          if (cached && cached.length > 0) {
+            // Valid cache — send as definitive (no loading indicator)
+            send({ type: 'completion.response', sessionId: reqSessionId, commands: cached, cached: false });
+          } else {
+            // No cache yet — return adapter fallback, mark as loading
+            // (will auto-update when first SDK query runs on this session)
+            const adapter = sessionManager.getAdapterForSession(reqSessionId);
+            const fallback = adapter?.listCommands
+              ? await adapter.listCommands()
+              : [];
+            send({ type: 'completion.response', sessionId: reqSessionId, commands: fallback, cached: true });
+          }
+          // When SDK query.supportedCommands() returns, it broadcasts via 'commands' event
           break;
         }
 
@@ -278,6 +322,7 @@ export function handleWebSocket(
     sessionManager.removeMessageListener(listenerId);
     sessionManager.removeSessionUpdateListener(listenerId);
     sessionManager.removeNavigateListener(listenerId);
+    sessionManager.removeCommandsListener(listenerId);
     sessionManager.unregisterWebViewer(listenerId);
   });
 

@@ -31,6 +31,11 @@ import {
 } from './db.js';
 import { createProvider } from './channels/index.js';
 import { randomUUID } from 'node:crypto';
+import {
+  handleSlashCommand as handleSharedSlashCommand,
+  findSessionByIdOrName,
+  type SlashCommandContext,
+} from './slash-commands.js';
 
 /** Throttle interval for <think> stream updates */
 const STREAM_THROTTLE_MS = 800;
@@ -207,20 +212,15 @@ export class ChannelRouterImpl implements ChannelRouter {
       return;
     }
 
-    // /exit command: return to Lobby Manager
-    if (msg.text.trim() === '/exit') {
-      const binding = getBinding(this.db, identityKey);
-      if (binding?.active_session_id) {
-        this.lastSenderBySession.delete(binding.active_session_id);
-        this.streamStates.delete(identityKey);
+    // Slash command interception — handled locally, never forwarded to AI agent
+    const trimmed = msg.text.trim();
+    if (trimmed.startsWith('/')) {
+      const slashResult = await this.handleSlashCommand(trimmed, identityKey, msg.identity);
+      if (slashResult !== null) {
+        await this.sendToChannel(msg.identity, slashResult);
+        return;
       }
-      updateBindingActiveSession(this.db, identityKey, null);
-      const lmId = this.lobbyManager?.getSessionId();
-      if (lmId) {
-        this.lastSenderBySession.set(lmId, identityKey);
-      }
-      await this.sendToChannel(msg.identity, '✅ 已返回 Lobby Manager，请发送新指令。');
-      return;
+      // null means unknown command — fall through to normal routing
     }
 
     let binding = getBinding(this.db, identityKey);
@@ -264,6 +264,177 @@ export class ChannelRouterImpl implements ChannelRouter {
       this.streamStates.delete(identityKey);
       await this.sendToChannel(msg.identity, `⚠️ 消息发送失败: ${errMsg}`);
     }
+  }
+
+  // ─── Slash Command Handler ─────────────────────────────────────
+
+  /**
+   * Handle slash commands from IM users.
+   * Delegates to shared handler for common commands, handles IM-specific ones locally.
+   * Returns the response text if the command was recognized, or null if not.
+   */
+  private async handleSlashCommand(
+    input: string,
+    identityKey: string,
+    identity: InboundChannelMessage['identity'],
+  ): Promise<string | null> {
+    const parts = input.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const arg = parts.slice(1).join(' ').trim();
+
+    // IM-specific commands (need binding/identity context)
+    switch (cmd) {
+      case '/exit':
+        return this.cmdExit(identityKey);
+      case '/info':
+        return this.cmdInfo(identityKey);
+      case '/bind':
+        return this.cmdBind(identityKey, arg);
+      case '/unbind':
+        return this.cmdUnbind(identityKey);
+      case '/goto':
+        return this.cmdGoto(identityKey, arg);
+    }
+
+    // Delegate to shared handler for common commands (/help, /ls, /add, /rm)
+    const ctx: SlashCommandContext = {
+      sessionManager: this.sessionManager,
+      lmSessionId: this.lobbyManager?.getSessionId() ?? null,
+    };
+    const result = await handleSharedSlashCommand(input, ctx);
+    if (!result) return null;
+
+    // Apply IM-specific side effects
+    if (result.createdSessionId) {
+      updateBindingActiveSession(this.db, identityKey, result.createdSessionId);
+      this.lastSenderBySession.set(result.createdSessionId, identityKey);
+    }
+    if (result.navigateSessionId && !result.createdSessionId) {
+      updateBindingActiveSession(this.db, identityKey, result.navigateSessionId);
+      this.lastSenderBySession.set(result.navigateSessionId, identityKey);
+    }
+    if (result.destroyedSessionId) {
+      this.handleSessionDestroyed(result.destroyedSessionId);
+    }
+
+    return result.text;
+  }
+
+  /** /goto <id|name> — Switch to a session (IM version with exclusivity check) */
+  private cmdGoto(identityKey: string, arg: string): string {
+    if (!arg) {
+      return '⚠️ 用法: `/goto <session_id 或 name>`';
+    }
+
+    const session = findSessionByIdOrName(this.sessionManager, arg);
+    if (!session) {
+      return `⚠️ 未找到匹配的会话: "${arg}"`;
+    }
+
+    // Check exclusivity
+    const lmSessionId = this.lobbyManager?.getSessionId();
+    if (session.id !== lmSessionId) {
+      const existing = getBindingBySession(this.db, session.id);
+      if (existing && existing.identity_key !== identityKey) {
+        return `⚠️ 会话已被 ${existing.peer_display_name ?? existing.peer_id} 占用，无法切换。`;
+      }
+    }
+
+    const binding = getBinding(this.db, identityKey);
+    if (binding?.active_session_id) {
+      this.lastSenderBySession.delete(binding.active_session_id);
+    }
+
+    updateBindingActiveSession(this.db, identityKey, session.id);
+    this.lastSenderBySession.set(session.id, identityKey);
+
+    return `✅ 已切换到会话: **${session.displayName}** (\`${session.id.slice(0, 12)}\`)`;
+  }
+
+  /** /exit — Return to Lobby Manager */
+  private cmdExit(identityKey: string): string {
+    const binding = getBinding(this.db, identityKey);
+    if (binding?.active_session_id) {
+      this.lastSenderBySession.delete(binding.active_session_id);
+      this.streamStates.delete(identityKey);
+    }
+    updateBindingActiveSession(this.db, identityKey, null);
+    const lmId = this.lobbyManager?.getSessionId();
+    if (lmId) {
+      this.lastSenderBySession.set(lmId, identityKey);
+    }
+    return '✅ 已返回 Lobby Manager，请发送新指令。';
+  }
+
+  /** /info — Show current session info */
+  private cmdInfo(identityKey: string): string {
+    const binding = getBinding(this.db, identityKey);
+    if (!binding) {
+      return 'ℹ️ 未绑定任何会话，当前连接到 Lobby Manager。';
+    }
+
+    const sessionId = this.resolveSessionId(binding);
+    if (!sessionId) {
+      return 'ℹ️ 未绑定任何会话，当前连接到 Lobby Manager。';
+    }
+
+    const lmSessionId = this.lobbyManager?.getSessionId();
+    if (sessionId === lmSessionId) {
+      return 'ℹ️ 当前连接到 **Lobby Manager**。使用 `/goto` 切换到其他会话。';
+    }
+
+    const info = this.sessionManager.getSessionInfo(sessionId);
+    if (!info) {
+      return `ℹ️ 当前会话 ID: \`${sessionId}\`（详细信息不可用）`;
+    }
+
+    const statusIcon = info.status === 'running' ? '🟢'
+      : info.status === 'idle' ? '🟡'
+      : info.status === 'error' ? '🔴'
+      : info.status === 'awaiting_approval' ? '🟠'
+      : '⚫';
+
+    return [
+      `ℹ️ **当前会话信息**`,
+      '',
+      `**名称:** ${info.displayName}`,
+      `**ID:** \`${info.id}\``,
+      `**状态:** ${statusIcon} ${info.status}`,
+      `**适配器:** ${info.adapterName}`,
+      `**工作目录:** \`${info.cwd}\``,
+      info.model ? `**模型:** ${info.model}` : null,
+      `**消息数:** ${info.messageCount}`,
+    ].filter(Boolean).join('\n');
+  }
+
+  /** /bind <sessionId> — Bind to a specific session */
+  private cmdBind(identityKey: string, arg: string): string {
+    if (!arg) {
+      return '⚠️ 用法: `/bind <session_id>`';
+    }
+
+    const session = findSessionByIdOrName(this.sessionManager, arg);
+    if (!session) {
+      return `⚠️ 未找到匹配的会话: "${arg}"`;
+    }
+
+    const result = this.bindSession(identityKey, session.id);
+    if (!result.ok) {
+      return `⚠️ 绑定失败: ${result.error}`;
+    }
+
+    this.lastSenderBySession.set(session.id, identityKey);
+    return `✅ 已绑定到会话: **${session.displayName}** (\`${session.id.slice(0, 12)}\`)`;
+  }
+
+  /** /unbind — Unbind from current session */
+  private cmdUnbind(identityKey: string): string {
+    this.unbindSession(identityKey);
+    const lmId = this.lobbyManager?.getSessionId();
+    if (lmId) {
+      this.lastSenderBySession.set(lmId, identityKey);
+    }
+    return '✅ 已解绑当前会话，返回 Lobby Manager。';
   }
 
   // ─── Session Message → IM (with stream buffer + markdown formatting) ──
