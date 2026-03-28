@@ -112,6 +112,8 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
   private injectedMcpServers: string[] = [];
   private planMode = false;
   private originalInstructions: string | undefined;
+  /** Set to true when kill() is called intentionally, so exit handler respects it */
+  private killedIntentionally = false;
 
   constructor(sessionId: string, options: SpawnOptions) {
     super();
@@ -144,7 +146,10 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
     this.childProcess.on('exit', (code) => {
       console.log(`[Codex] Process exited with code ${code}`);
-      this.status = code === 0 ? 'stopped' : 'error';
+      // If kill() was called intentionally, keep 'stopped' status regardless of exit code
+      if (!this.killedIntentionally) {
+        this.status = code === 0 ? 'stopped' : 'error';
+      }
       this.childProcess = null;
       this.emit('exit', code ?? 1);
     });
@@ -385,6 +390,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
   kill(): void {
     console.log('[Codex] Killing process');
+    this.killedIntentionally = true;
     // Clean up injected MCP servers from global config
     if (this.injectedMcpServers.length > 0 && this.childProcess) {
       for (const name of this.injectedMcpServers) {
