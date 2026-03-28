@@ -195,6 +195,117 @@ async function main() {
     },
   );
 
+  // ─── Channel Provider Tools ──────────────────────────────────────
+
+  // --- Tool: lobby_list_channel_providers ---
+  server.tool(
+    'lobby_list_channel_providers',
+    'List all configured IM channel providers (e.g. WeCom, Telegram) with their status',
+    {},
+    async () => {
+      const providers = await apiCall('GET', '/api/channels/providers');
+      return textResult(providers);
+    },
+  );
+
+  // --- Tool: lobby_add_channel_provider ---
+  server.tool(
+    'lobby_add_channel_provider',
+    'Add and start a new IM channel provider (e.g. WeCom bot, Telegram bot)',
+    {
+      channelName: z.string().describe('Channel type: "wecom", "telegram", etc.'),
+      accountId: z.string().describe('Bot/app ID for this channel'),
+      credentials: z.record(z.string(), z.string()).describe('Provider credentials (e.g. { "botToken": "..." } for Telegram, { "corpId": "...", "agentId": "...", "secret": "..." } for WeCom)'),
+      webhook: z.object({
+        path: z.string(),
+        secret: z.string().optional(),
+      }).optional().describe('Optional webhook configuration'),
+      enabled: z.boolean().default(true).describe('Whether to enable immediately (default: true)'),
+    },
+    async ({ channelName, accountId, credentials, webhook, enabled }) => {
+      const result = await apiCall('POST', '/api/channels/providers', {
+        channelName,
+        accountId,
+        credentials,
+        webhook,
+        enabled,
+      });
+      return textResult(result);
+    },
+  );
+
+  // --- Tool: lobby_remove_channel_provider ---
+  server.tool(
+    'lobby_remove_channel_provider',
+    'Remove an IM channel provider and stop it',
+    {
+      providerId: z.string().describe('Provider ID to remove (format: "channelName:accountId")'),
+    },
+    async ({ providerId }) => {
+      await apiCall('DELETE', `/api/channels/providers/${encodeURIComponent(providerId)}`);
+      return textResult({ ok: true, providerId });
+    },
+  );
+
+  // --- Tool: lobby_toggle_channel_provider ---
+  server.tool(
+    'lobby_toggle_channel_provider',
+    'Enable or disable an existing IM channel provider',
+    {
+      providerId: z.string().describe('Provider ID (format: "channelName:accountId")'),
+      enabled: z.boolean().describe('true to enable, false to disable'),
+    },
+    async ({ providerId, enabled }) => {
+      await apiCall('PATCH', `/api/channels/providers/${encodeURIComponent(providerId)}`, {
+        enabled,
+      });
+      return textResult({ ok: true, providerId, enabled });
+    },
+  );
+
+  // ─── Channel Binding Tools ───────────────────────────────────────
+
+  // --- Tool: lobby_list_channel_bindings ---
+  server.tool(
+    'lobby_list_channel_bindings',
+    'List all IM user → session bindings (shows which IM users are connected to which sessions)',
+    {},
+    async () => {
+      const bindings = await apiCall('GET', '/api/channels/bindings');
+      return textResult(bindings);
+    },
+  );
+
+  // --- Tool: lobby_bind_channel ---
+  server.tool(
+    'lobby_bind_channel',
+    'Bind an IM user to a specific session (route their messages to that session)',
+    {
+      identityKey: z.string().describe('Identity key of the IM user (format: "channelName:accountId:peerId")'),
+      sessionId: z.string().describe('Session ID to bind to'),
+    },
+    async ({ identityKey, sessionId }) => {
+      const result = await apiCall('POST', '/api/channels/bindings', {
+        identityKey,
+        sessionId,
+      });
+      return textResult(result);
+    },
+  );
+
+  // --- Tool: lobby_unbind_channel ---
+  server.tool(
+    'lobby_unbind_channel',
+    'Unbind an IM user from their current session (returns them to Lobby Manager)',
+    {
+      identityKey: z.string().describe('Identity key of the IM user to unbind'),
+    },
+    async ({ identityKey }) => {
+      await apiCall('DELETE', `/api/channels/bindings/${encodeURIComponent(identityKey)}`);
+      return textResult({ ok: true, identityKey });
+    },
+  );
+
   // Start stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);

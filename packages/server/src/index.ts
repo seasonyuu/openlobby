@@ -63,8 +63,8 @@ export async function createServer(options: ServerOptions = {}) {
   sessionManager.registerAdapter(claudeAdapter);
   sessionManager.registerAdapter(codexAdapter);
 
-  // Start MCP internal API on separate port
-  await startMcpApi(sessionManager, mcpApiPort);
+  // Start MCP internal API on separate port (channelRouter injected below)
+  const mcpApi = await startMcpApi(sessionManager, mcpApiPort);
 
   // Initialize Lobby Manager
   const adapters = new Map<string, AgentAdapter>([
@@ -74,8 +74,9 @@ export async function createServer(options: ServerOptions = {}) {
   const lobbyManager = new LobbyManager(sessionManager, adapters, mcpApiPort, db);
   await lobbyManager.init();
 
-  // Initialize Channel Router
+  // Initialize Channel Router and inject into MCP API
   const channelRouter = new ChannelRouterImpl(sessionManager, lobbyManager, db);
+  mcpApi.setChannelRouter(channelRouter);
 
   // Load configured channel providers from DB and start them
   const providerRows = getAllProviders(db);

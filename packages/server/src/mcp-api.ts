@@ -1,6 +1,11 @@
 import Fastify from 'fastify';
 import { mkdirSync } from 'node:fs';
 import type { SessionManager } from './session-manager.js';
+import type { ChannelRouterImpl } from './channel-router.js';
+
+export interface McpApiHandle {
+  setChannelRouter(router: ChannelRouterImpl): void;
+}
 
 /**
  * Start a lightweight internal HTTP API on a separate port for the MCP Server process.
@@ -9,8 +14,11 @@ import type { SessionManager } from './session-manager.js';
 export async function startMcpApi(
   sessionManager: SessionManager,
   port: number,
-): Promise<void> {
+): Promise<McpApiHandle> {
   const app = Fastify({ logger: false });
+
+  // Channel router is injected after construction (initialization order)
+  let channelRouter: ChannelRouterImpl | null = null;
 
   // List all sessions
   app.get('/api/sessions', async () => {
@@ -139,6 +147,127 @@ export async function startMcpApi(
     },
   );
 
+  // ─── Channel Provider Endpoints ────────────────────────────────────
+
+  // List all channel providers
+  app.get('/api/channels/providers', async (_request, reply) => {
+    if (!channelRouter) {
+      return reply.status(503).send({ error: 'Channel router not initialized' });
+    }
+    return channelRouter.listProviders();
+  });
+
+  // Add a channel provider
+  app.post<{
+    Body: {
+      channelName: string;
+      accountId: string;
+      credentials: Record<string, string>;
+      webhook?: { path: string; secret?: string };
+      enabled?: boolean;
+    };
+  }>('/api/channels/providers', async (request, reply) => {
+    if (!channelRouter) {
+      return reply.status(503).send({ error: 'Channel router not initialized' });
+    }
+    try {
+      await channelRouter.addProviderConfig(request.body);
+      return { ok: true, providers: channelRouter.listProviders() };
+    } catch (err) {
+      return reply.status(400).send({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  // Remove a channel provider
+  app.delete<{ Params: { id: string } }>(
+    '/api/channels/providers/:id',
+    async (request, reply) => {
+      if (!channelRouter) {
+        return reply.status(503).send({ error: 'Channel router not initialized' });
+      }
+      try {
+        await channelRouter.removeProviderConfig(decodeURIComponent(request.params.id));
+        return { ok: true };
+      } catch (err) {
+        return reply.status(400).send({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+
+  // Toggle (enable/disable) a channel provider
+  app.patch<{
+    Params: { id: string };
+    Body: { enabled: boolean };
+  }>('/api/channels/providers/:id', async (request, reply) => {
+    if (!channelRouter) {
+      return reply.status(503).send({ error: 'Channel router not initialized' });
+    }
+    try {
+      await channelRouter.toggleProviderConfig(
+        decodeURIComponent(request.params.id),
+        request.body.enabled,
+      );
+      return { ok: true };
+    } catch (err) {
+      return reply.status(400).send({
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+
+  // ─── Channel Binding Endpoints ─────────────────────────────────────
+
+  // List all channel bindings
+  app.get('/api/channels/bindings', async (_request, reply) => {
+    if (!channelRouter) {
+      return reply.status(503).send({ error: 'Channel router not initialized' });
+    }
+    return channelRouter.listBindings();
+  });
+
+  // Bind an IM user to a session
+  app.post<{
+    Body: { identityKey: string; sessionId: string };
+  }>('/api/channels/bindings', async (request, reply) => {
+    if (!channelRouter) {
+      return reply.status(503).send({ error: 'Channel router not initialized' });
+    }
+    const { identityKey, sessionId } = request.body;
+    const result = channelRouter.bindSession(identityKey, sessionId);
+    if (!result.ok) {
+      return reply.status(400).send({ error: result.error });
+    }
+    return { ok: true, bindings: channelRouter.listBindings() };
+  });
+
+  // Unbind an IM user
+  app.delete<{ Params: { key: string } }>(
+    '/api/channels/bindings/:key',
+    async (request, reply) => {
+      if (!channelRouter) {
+        return reply.status(503).send({ error: 'Channel router not initialized' });
+      }
+      try {
+        channelRouter.unbindSession(decodeURIComponent(request.params.key));
+        return { ok: true };
+      } catch (err) {
+        return reply.status(400).send({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  );
+
   await app.listen({ port, host: '127.0.0.1' });
   console.log(`MCP internal API running on http://127.0.0.1:${port}`);
+
+  return {
+    setChannelRouter(router: ChannelRouterImpl) {
+      channelRouter = router;
+    },
+  };
 }
