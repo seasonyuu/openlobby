@@ -33,6 +33,9 @@ Users can manage multiple AI coding agent sessions (Claude Code, Codex CLI) thro
 - Interface-first, program to abstractions
 - Tests use vitest
 
+## Workflow Rules
+- Each bug fix or feature must be committed separately with its own commit message
+
 ## Common Commands
 - `pnpm install` — Install dependencies
 - `pnpm -r build` — Build all packages
