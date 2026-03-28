@@ -238,8 +238,9 @@ export function wsRespondControl(
   sessionId: string,
   requestId: string,
   decision: 'allow' | 'deny',
+  payload?: Record<string, unknown>,
 ): void {
-  wsSend({ type: 'control.respond', sessionId, requestId, decision });
+  wsSend({ type: 'control.respond', sessionId, requestId, decision, payload });
   useLobbyStore.getState().setPendingControl(sessionId, null);
 }
 

@@ -51,11 +51,20 @@ export interface LobbyMessageData {
   meta?: Record<string, unknown>;
 }
 
+export interface ControlQuestionData {
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+  multiSelect: boolean;
+}
+
 export interface ControlRequestData {
   requestId: string;
   sessionId: string;
   toolName: string;
   toolInput: Record<string, unknown>;
+  /** Structured questions when toolName === 'AskUserQuestion' */
+  questions?: ControlQuestionData[];
 }
 
 interface LobbyState {
