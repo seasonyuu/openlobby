@@ -1,0 +1,35 @@
+{
+  "name": "openlobby-channel-telegram",
+  "version": "0.1.0",
+  "description": "Telegram Bot channel plugin for OpenLobby",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "openlobby": {
+    "displayName": "Telegram"
+  },
+  "keywords": [
+    "openlobby",
+    "openlobby-channel",
+    "telegram",
+    "bot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@openlobby/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.7.0"
+  }
+}
