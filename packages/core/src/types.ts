@@ -113,3 +113,10 @@ export interface AgentAdapter {
   getResumeCommand(sessionId: string): string;
   listCommands?(): Promise<AdapterCommand[]>;
 }
+
+/** Plugin module contract for external adapter packages */
+export interface AdapterPluginModule {
+  createAdapter(): AgentAdapter;
+  readonly adapterName: string;
+  readonly displayName: string;
+}

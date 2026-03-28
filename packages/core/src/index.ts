@@ -9,6 +9,7 @@ export type {
   AgentAdapter,
   AdapterCommand,
   McpServerConfig,
+  AdapterPluginModule,
 } from './types.js';
 
 export type { ClientMessage, ServerMessage } from './protocol.js';
