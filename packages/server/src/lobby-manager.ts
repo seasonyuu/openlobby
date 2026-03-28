@@ -96,8 +96,6 @@ const LM_ALLOWED_TOOLS = [
   'mcp__openlobby__lobby_unbind_channel',
 ];
 
-/** Priority order for selecting the Lobby Manager's driver adapter */
-const ADAPTER_PRIORITY = ['claude-code', 'codex-cli'];
 
 /**
  * LobbyManager is a special session managed through SessionManager.
@@ -152,8 +150,11 @@ export class LobbyManager {
   }
 
   async init(): Promise<void> {
+    // Build dynamic priority: prefer claude-code, then any other detected adapters
+    const adapterPriority = ['claude-code', ...Array.from(this.adapters.keys()).filter((n) => n !== 'claude-code')];
+
     // Find the best available adapter
-    for (const name of ADAPTER_PRIORITY) {
+    for (const name of adapterPriority) {
       const adapter = this.adapters.get(name);
       if (!adapter) continue;
       try {

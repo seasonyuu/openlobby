@@ -5,11 +5,11 @@ import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
-import { ClaudeCodeAdapter, CodexCliAdapter } from '@openlobby/core';
 import type { AgentAdapter } from '@openlobby/core';
 import { SessionManager } from './session-manager.js';
 import { handleWebSocket } from './ws-handler.js';
-import { initDb, getAllProviders } from './db.js';
+import { initDb, getAllProviders, getAllAdapterPlugins } from './db.js';
+import { createBuiltinAdapters, loadAdapterPlugin } from './adapters/index.js';
 import { registerUploadRoute } from './upload.js';
 import { startMcpApi } from './mcp-api.js';
 import { LobbyManager } from './lobby-manager.js';
@@ -36,42 +36,49 @@ export async function createServer(options: ServerOptions = {}) {
   // They will be lazily resumed when the user sends a message
   const db = initDb();
 
-  // Initialize adapters
-  const claudeAdapter = new ClaudeCodeAdapter();
-  const detection = await claudeAdapter.detect();
+  // Initialize adapters: built-in + plugins from DB
+  const allAdapters = new Map<string, AgentAdapter>();
 
-  if (detection.installed) {
-    console.log(
-      `Claude Code detected: ${detection.version} at ${detection.path}`,
-    );
-  } else {
-    console.warn('Claude Code CLI not found. Install it to use Claude Code sessions.');
+  // Built-in adapters
+  for (const adapter of createBuiltinAdapters()) {
+    const detection = await adapter.detect();
+    if (detection.installed) {
+      console.log(`${adapter.displayName} detected: ${detection.version} at ${detection.path}`);
+      allAdapters.set(adapter.name, adapter);
+    } else {
+      console.warn(`${adapter.displayName} not found.`);
+    }
   }
 
-  // Initialize Codex CLI adapter
-  const codexAdapter = new CodexCliAdapter();
-  const codexDetection = await codexAdapter.detect();
-
-  if (codexDetection.installed) {
-    console.log(`Codex CLI detected: ${codexDetection.version} at ${codexDetection.path}`);
-  } else {
-    console.warn('Codex CLI not found. Install it to use Codex CLI sessions.');
+  // Plugin adapters from DB
+  const pluginRows = getAllAdapterPlugins(db);
+  for (const row of pluginRows) {
+    if (!row.enabled) continue;
+    try {
+      const adapter = await loadAdapterPlugin(row.name);
+      const detection = await adapter.detect();
+      if (detection.installed) {
+        console.log(`[Plugin] ${adapter.displayName} detected: ${detection.version}`);
+        allAdapters.set(adapter.name, adapter);
+      } else {
+        console.warn(`[Plugin] ${adapter.displayName} CLI not installed`);
+      }
+    } catch (err) {
+      console.error(`[Plugin] Failed to load adapter "${row.name}":`, err);
+    }
   }
 
   // Initialize session manager with SQLite
   const sessionManager = new SessionManager(db);
-  sessionManager.registerAdapter(claudeAdapter);
-  sessionManager.registerAdapter(codexAdapter);
+  for (const adapter of allAdapters.values()) {
+    sessionManager.registerAdapter(adapter);
+  }
 
   // Start MCP internal API on separate port (channelRouter injected below)
   const mcpApi = await startMcpApi(sessionManager, mcpApiPort);
 
   // Initialize Lobby Manager
-  const adapters = new Map<string, AgentAdapter>([
-    [claudeAdapter.name, claudeAdapter],
-    [codexAdapter.name, codexAdapter],
-  ]);
-  const lobbyManager = new LobbyManager(sessionManager, adapters, mcpApiPort, db);
+  const lobbyManager = new LobbyManager(sessionManager, allAdapters, mcpApiPort, db);
   await lobbyManager.init();
 
   // Initialize Channel Router and inject into MCP API
@@ -103,10 +110,9 @@ export async function createServer(options: ServerOptions = {}) {
   // Health check
   app.get('/health', async () => ({
     status: 'ok',
-    adapters: {
-      'claude-code': detection.installed,
-      'codex-cli': codexDetection.installed,
-    },
+    adapters: Object.fromEntries(
+      Array.from(allAdapters.keys()).map((name) => [name, true]),
+    ),
     lobbyManager: lobbyManager.isAvailable(),
     channelProviders: channelRouter.listProviders(),
   }));
