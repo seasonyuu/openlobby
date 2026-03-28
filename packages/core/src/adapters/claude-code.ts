@@ -361,7 +361,7 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     if (decision === 'allow') {
       pending.resolve({ behavior: 'allow', updatedInput: pending.toolInput });
     } else {
-      pending.resolve({ behavior: 'deny', message: 'User denied the tool' });
+      pending.resolve({ behavior: 'deny', message: 'User denied the tool', interrupt: true });
     }
   }
 
