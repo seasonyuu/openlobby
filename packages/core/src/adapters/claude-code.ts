@@ -361,6 +361,11 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     console.log('[ClaudeCode] Options updated:', Object.keys(opts));
   }
 
+  /** Mark this process as a resume of an existing Claude Code session */
+  setResumeId(sessionId: string): void {
+    this.realSessionId = sessionId;
+  }
+
   setPlanMode(enabled: boolean): void {
     this.planMode = enabled;
     console.log('[ClaudeCode] Plan mode:', enabled ? 'ON' : 'OFF');
@@ -417,6 +422,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       mcpServers: options?.mcpServers,
       model: options?.model,
     }, this.detectedCliPath);
+    // Mark as resume so sendMessage() uses SDK resume instead of fresh query
+    proc.setResumeId(sessionId);
     if (options?.prompt) {
       proc.sendMessage(options.prompt);
     }
