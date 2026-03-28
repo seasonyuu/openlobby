@@ -51,9 +51,10 @@ export async function startMcpApi(
       name?: string;
       model?: string;
       initialPrompt?: string;
+      navigate?: boolean;
     };
   }>('/api/sessions', async (request, reply) => {
-    const { adapter, cwd, name, model, initialPrompt } = request.body;
+    const { adapter, cwd, name, model, initialPrompt, navigate } = request.body;
     try {
       // Auto-create directory if not exists
       mkdirSync(cwd, { recursive: true });
@@ -67,6 +68,11 @@ export async function startMcpApi(
       // Send initial prompt if provided
       if (initialPrompt) {
         await sessionManager.sendMessage(session.id, initialPrompt);
+      }
+
+      // Auto-navigate to the new session (triggers Web UI switch + IM binding)
+      if (navigate) {
+        sessionManager.broadcastNavigate(session.id);
       }
 
       return {
