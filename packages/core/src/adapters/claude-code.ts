@@ -153,6 +153,7 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
         behavior: string;
         updatedInput?: Record<string, unknown>;
         message?: string;
+        interrupt?: boolean;
       }) => void;
     }
   >();
@@ -294,6 +295,7 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     behavior: string;
     updatedInput?: Record<string, unknown>;
     message?: string;
+    interrupt?: boolean;
     toolUseID?: string;
   }> {
     // In plan mode, auto-deny all non-read-only tools
