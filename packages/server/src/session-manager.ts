@@ -173,7 +173,8 @@ export class SessionManager {
 
   private buildResumeCommand(s: ManagedSession): string {
     const parts: string[] = [`cd ${s.cwd}`];
-    let cmd = `claude --resume ${s.id}`;
+    const adapter = this.adapters.get(s.adapterName);
+    let cmd = adapter ? adapter.getResumeCommand(s.id) : `claude --resume ${s.id}`;
     if (s.model) cmd += ` --model ${s.model}`;
     // Check process spawnOptions for permissionMode
     const permMode = (s.process as unknown as { spawnOptions?: { permissionMode?: string } })
@@ -534,7 +535,10 @@ export class SessionManager {
       const rows = getAllSessions(this.db);
       for (const row of rows) {
         if (seenIds.has(row.id)) continue;
-        let resumeCmd = `cd ${row.cwd} && claude --resume ${row.id}`;
+        const rowAdapter = this.adapters.get(row.adapter_name);
+        let resumeCmd = rowAdapter
+          ? `cd ${row.cwd} && ${rowAdapter.getResumeCommand(row.id)}`
+          : `cd ${row.cwd} && claude --resume ${row.id}`;
         if (row.model) resumeCmd += ` --model ${row.model}`;
         result.push({
           id: row.id,
@@ -677,7 +681,10 @@ export class SessionManager {
           model: row.model ?? undefined,
           cwd: row.cwd,
           origin: row.origin as 'lobby' | 'cli',
-          resumeCommand: `cd ${row.cwd} && claude --resume ${row.id}`,
+          resumeCommand: (() => {
+            const a = this.adapters.get(row.adapter_name);
+            return a ? `cd ${row.cwd} && ${a.getResumeCommand(row.id)}` : `cd ${row.cwd} && claude --resume ${row.id}`;
+          })(),
           jsonlPath: row.jsonl_path ?? undefined,
         };
       }
