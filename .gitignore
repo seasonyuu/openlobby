@@ -6,4 +6,5 @@ dist/
 .env.*
 .DS_Store
 packages/cli/web/
+packages/cli/README.md
 .claude/settings.local.json

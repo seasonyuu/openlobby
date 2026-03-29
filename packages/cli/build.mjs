@@ -47,6 +47,9 @@ if (existsSync(cliWeb)) {
 }
 cpSync(webDist, cliWeb, { recursive: true });
 
+// Copy root README.md for npm package display
+cpSync(join(rootDir, 'README.md'), join(__dirname, 'README.md'));
+
 console.log('✓ Build complete!');
 console.log(`  Bundle: ${join(__dirname, 'dist', 'bin.js')}`);
 console.log(`  Web:    ${cliWeb}`);
