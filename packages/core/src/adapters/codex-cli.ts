@@ -930,7 +930,7 @@ export class CodexCliAdapter implements AgentAdapter {
   }
 
   getResumeCommand(sessionId: string): string {
-    return `codex --resume ${sessionId}`;
+    return `codex resume ${sessionId}`;
   }
 
   async listCommands(): Promise<AdapterCommand[]> {
