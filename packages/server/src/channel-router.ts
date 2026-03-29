@@ -275,7 +275,22 @@ export class ChannelRouterImpl implements ChannelRouter {
     }
 
     try {
-      await this.sessionManager.sendMessage(sessionId, msg.text);
+      // Build message text with attachments and quote context
+      let messageText = msg.text;
+      if (msg.attachments && msg.attachments.length > 0) {
+        const attachmentLines = msg.attachments.map((a) => {
+          const label = a.type === 'image' ? '图片'
+            : a.type === 'voice' ? '语音'
+            : '文件';
+          const name = a.filename ? ` ${a.filename}` : '';
+          const url = a.url ? ` ${a.url}` : (a.base64 ? ' [base64]' : '');
+          return `[附件: ${label}${name}${url}]`;
+        });
+        messageText = messageText
+          ? `${messageText}\n\n${attachmentLines.join('\n')}`
+          : attachmentLines.join('\n');
+      }
+      await this.sessionManager.sendMessage(sessionId, messageText);
       updateBindingActivity(this.db, identityKey);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
