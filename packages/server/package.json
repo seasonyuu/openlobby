@@ -25,6 +25,9 @@
     "fastify": "^5.2.0",
     "zod": "^4.3.6"
   },
+  "optionalDependencies": {
+    "openlobby-channel-telegram": "workspace:*"
+  },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^25.5.0",
