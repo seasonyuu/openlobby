@@ -92,10 +92,11 @@ function ensureConnection(url: string) {
           if (data.session.status === 'idle' || data.session.status === 'stopped' || data.session.status === 'error') {
             state.setTyping(data.session.id, false);
           }
-          // Clear pending approval when session is no longer awaiting
-          if (data.session.status !== 'awaiting_approval') {
+          // Clear pending approvals when session terminates (not just status change).
+          // Normal approval responses use removePendingControl() to remove one at a time.
+          // Only clear ALL when session is fully done (idle/stopped/error).
+          if (data.session.status === 'idle' || data.session.status === 'stopped' || data.session.status === 'error') {
             state.setPendingControl(data.session.id, null);
-            // Also clear for previousId in case of session ID sync
             if (data.previousId) {
               state.setPendingControl(data.previousId, null);
             }
