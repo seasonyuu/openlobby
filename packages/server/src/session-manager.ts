@@ -298,6 +298,7 @@ export class SessionManager {
       last_active_at: session.lastActiveAt,
       model: session.model ?? null,
       tags: null,
+      permission_mode: session.permissionMode ?? null,
     });
   }
 
@@ -325,6 +326,7 @@ export class SessionManager {
       process,
       messageCount: 0,
       model: options.model,
+      permissionMode: options.permissionMode,
       origin,
       planMode: false,
     };
@@ -381,6 +383,8 @@ export class SessionManager {
     session.process.updateOptions(options);
     if (options.model) session.model = options.model;
     if (options.permissionMode) session.permissionMode = options.permissionMode;
+    // Persist model and permissionMode changes to SQLite
+    this.persistSession(session);
     this.broadcastSessionUpdate(session);
   }
 
@@ -446,7 +450,12 @@ export class SessionManager {
     if (!adapter) return null;
 
     console.log(`[SessionManager] Lazy-resuming session ${sessionId}`);
-    const process = await adapter.resume(sessionId, { prompt, cwd: row.cwd });
+    const resumePermMode = row.permission_mode ?? undefined;
+    const process = await adapter.resume(sessionId, {
+      prompt,
+      cwd: row.cwd,
+      permissionMode: resumePermMode,
+    });
 
     const session: ManagedSession = {
       id: sessionId,
@@ -459,6 +468,7 @@ export class SessionManager {
       process,
       messageCount: 0,
       model: row.model ?? undefined,
+      permissionMode: resumePermMode,
       origin: row.origin as 'lobby' | 'cli' | 'lobby-manager',
       planMode: this.pendingPlanMode.get(sessionId) ?? false,
     };
@@ -624,6 +634,7 @@ export class SessionManager {
         last_active_at: now,
         model: null,
         tags: null,
+        permission_mode: null,
       });
     }
 

@@ -15,6 +15,7 @@ export interface SessionRow {
   last_active_at: number;
   model: string | null;
   tags: string | null;
+  permission_mode: string | null;
 }
 
 export function initDb(dbPath?: string): Database.Database {
@@ -43,6 +44,13 @@ export function initDb(dbPath?: string): Database.Database {
       tags          TEXT
     )
   `);
+
+  // Migration: add permission_mode column if not exists
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN permission_mode TEXT`);
+  } catch {
+    // Column already exists — ignore
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS channel_providers (
@@ -99,9 +107,9 @@ export function initDb(dbPath?: string): Database.Database {
 export function upsertSession(db: Database.Database, row: SessionRow): void {
   db.prepare(`
     INSERT OR REPLACE INTO sessions
-      (id, adapter_name, display_name, cwd, jsonl_path, origin, status, created_at, last_active_at, model, tags)
+      (id, adapter_name, display_name, cwd, jsonl_path, origin, status, created_at, last_active_at, model, tags, permission_mode)
     VALUES
-      (@id, @adapter_name, @display_name, @cwd, @jsonl_path, @origin, @status, @created_at, @last_active_at, @model, @tags)
+      (@id, @adapter_name, @display_name, @cwd, @jsonl_path, @origin, @status, @created_at, @last_active_at, @model, @tags, @permission_mode)
   `).run(row);
 }
 
