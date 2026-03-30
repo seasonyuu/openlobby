@@ -6,6 +6,7 @@ import QuestionCard from './QuestionCard';
 import TypingIndicator from './TypingIndicator';
 
 const EMPTY_MESSAGES: never[] = [];
+const EMPTY_CONTROLS: import('../stores/lobby-store').ControlRequestData[] = [];
 
 interface Props {
   sessionId: string;
@@ -15,7 +16,7 @@ interface Props {
 
 export default function MessageList({ sessionId, onControlRespond, onChoiceSelect }: Props) {
   const messages = useLobbyStore((s) => s.messagesBySession[sessionId] ?? EMPTY_MESSAGES);
-  const pendingControls = useLobbyStore((s) => s.pendingControlBySession[sessionId] ?? []);
+  const pendingControls = useLobbyStore((s) => s.pendingControlBySession[sessionId] ?? EMPTY_CONTROLS);
   const isTyping = useLobbyStore((s) => s.typingBySession[sessionId] ?? false);
 
   const containerRef = useRef<HTMLDivElement>(null);
