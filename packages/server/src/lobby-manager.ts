@@ -8,7 +8,7 @@ import type {
 } from '@openlobby/core';
 import type { SessionManager } from './session-manager.js';
 import type Database from 'better-sqlite3';
-import { getSessionByOrigin, deleteSession } from './db.js';
+import { getSessionByOrigin, deleteSession, getServerConfig } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -152,9 +152,14 @@ export class LobbyManager {
     };
   }
 
-  async init(): Promise<void> {
-    // Build dynamic priority: prefer claude-code, then any other detected adapters
-    const adapterPriority = ['claude-code', ...Array.from(this.adapters.keys()).filter((n) => n !== 'claude-code')];
+  async init(preferredAdapter?: string): Promise<void> {
+    // Read default adapter from server_config if not specified
+    const configAdapter = preferredAdapter ?? (this.db ? getServerConfig(this.db, 'defaultAdapter') : undefined);
+
+    // Build dynamic priority: prefer configured adapter, then claude-code, then others
+    const adapterPriority = configAdapter
+      ? [configAdapter, ...Array.from(this.adapters.keys()).filter((n) => n !== configAdapter)]
+      : ['claude-code', ...Array.from(this.adapters.keys()).filter((n) => n !== 'claude-code')];
 
     // Find the best available adapter
     for (const name of adapterPriority) {
@@ -279,6 +284,20 @@ export class LobbyManager {
         env: { OPENLOBBY_API: `http://127.0.0.1:${this.mcpApiPort}` },
       },
     };
+  }
+
+  /**
+   * Destroy the current LM session and recreate with a new adapter.
+   */
+  async rebuild(newAdapterName: string): Promise<void> {
+    this.destroy();
+    this.available = false;
+    this.adapterName = null;
+    this.sessionId = null;
+
+    this.sessionManager.removeSessionUpdateListener('lm-id-sync');
+
+    await this.init(newAdapterName);
   }
 
   destroy(): void {
