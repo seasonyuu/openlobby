@@ -461,6 +461,16 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     console.log('[ClaudeCode] Plan mode:', enabled ? 'ON' : 'OFF');
   }
 
+  interrupt(): void {
+    if (this.status !== 'running' && this.status !== 'awaiting_approval') return;
+    console.log('[ClaudeCode] Interrupting current generation');
+    this.abortController.abort();
+    this.pendingControls.clear();
+    this.preRespondedControls.clear();
+    this.status = 'idle';
+    this.emit('idle');
+  }
+
   kill(): void {
     console.log('[ClaudeCode] Killing process');
     // Abort first to close the transport, then clear pending controls.
