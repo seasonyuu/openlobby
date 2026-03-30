@@ -1008,8 +1008,8 @@ export class CodexCliAdapter implements AgentAdapter {
           const meta = this.extractCodexMeta(fullPath);
           if (!meta) continue;
           if (filterCwd && meta.cwd !== filterCwd) continue;
-          // Skip sessions with no meaningful content
-          if (meta.messageCount === 0 && !meta.lastMessage) continue;
+          // Skip truly empty sessions (no cwd means no session_meta was found)
+          if (!meta.cwd && meta.messageCount === 0) continue;
 
           const stat = statSync(fullPath);
           results.push({
@@ -1045,38 +1045,56 @@ export class CodexCliAdapter implements AgentAdapter {
     messageCount: number;
   } | null {
     try {
-      // Read first 4KB to get header info
+      // Extract UUID from filename first (format: rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl)
+      const fname = basename(filePath, '.jsonl');
+      const uuidMatch = fname.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+
+      // Read first 64KB — Codex session_meta lines can be 15KB+ (includes system prompt)
       const fd = openSync(filePath, 'r');
-      const buf = Buffer.alloc(4096);
-      const bytesRead = readSync(fd, buf, 0, 4096, 0);
+      const buf = Buffer.alloc(65536);
+      const bytesRead = readSync(fd, buf, 0, 65536, 0);
       closeSync(fd);
 
       const content = buf.toString('utf-8', 0, bytesRead);
       const lines = content.split('\n').filter((l: string) => l.trim());
 
-      let sessionId: string | null = null;
+      let sessionId: string | null = uuidMatch ? uuidMatch[1] : null;
       let cwd = '';
       let model: string | undefined;
       let messageCount = 0;
       let lastMessage: string | undefined;
 
-      for (const line of lines.slice(0, 10)) {
+      for (const line of lines.slice(0, 20)) {
         try {
           const obj = JSON.parse(line);
-          if (obj.session_id) sessionId = obj.session_id;
-          if (obj.threadId) sessionId = obj.threadId;
-          if (obj.thread?.id) sessionId = obj.thread.id;
+          if (obj.session_id && !sessionId) sessionId = obj.session_id;
+          if (obj.threadId && !sessionId) sessionId = obj.threadId;
+          if (obj.thread?.id && !sessionId) sessionId = obj.thread.id;
           // Codex JSONL session_meta format
           if (obj.type === 'session_meta' && obj.payload?.id) {
             sessionId = obj.payload.id;
             if (obj.payload.cwd) cwd = obj.payload.cwd;
             if (obj.payload.model) model = obj.payload.model;
+            if (obj.payload.model_provider) model = model ?? obj.payload.model_provider;
           }
-          if (obj.cwd) cwd = obj.cwd;
-          if (obj.model_provider || obj.model) model = obj.model ?? obj.model_provider;
+          // turn_context contains cwd for sessions where session_meta doesn't
+          if (obj.type === 'turn_context' && obj.payload?.cwd && !cwd) {
+            cwd = obj.payload.cwd;
+          }
+          if (obj.cwd && !cwd) cwd = obj.cwd;
+          if (obj.model_provider || obj.model) model = model ?? obj.model ?? obj.model_provider;
           if (obj.type === 'item.completed' || obj.type === 'turn.completed'
             || obj.type === 'event_msg') messageCount++;
-          // Extract user input as lastMessage for display/filtering
+          // Extract user input as lastMessage for display
+          if (obj.type === 'response_item' && obj.payload?.role === 'user') {
+            const content = obj.payload.content;
+            if (Array.isArray(content)) {
+              const textPart = content.find((p: { type: string }) => p.type === 'input_text');
+              if (textPart?.text && !textPart.text.startsWith('<')) {
+                lastMessage = textPart.text.slice(0, 100);
+              }
+            }
+          }
           if (obj.type === 'turn.started' || obj.type === 'turn/started') {
             const input = obj.params?.input ?? obj.input;
             if (Array.isArray(input)) {
@@ -1087,13 +1105,13 @@ export class CodexCliAdapter implements AgentAdapter {
             }
           }
         } catch {
-          // skip malformed lines
+          // skip malformed lines (truncated by buffer boundary)
         }
       }
 
       if (!sessionId) {
-        // Use filename as session ID fallback
-        sessionId = basename(filePath, '.jsonl');
+        // Use full filename as session ID fallback
+        sessionId = fname;
       }
 
       return { sessionId, cwd, model, messageCount, displayName: lastMessage?.slice(0, 30), lastMessage };
