@@ -179,6 +179,8 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
       }) => void;
     }
   >();
+  /** Pre-responded decisions: user responded before canUseTool was called */
+  private preRespondedControls = new Map<string, { decision: ControlDecision; payload?: Record<string, unknown> }>();
   private abortController = new AbortController();
 
   constructor(sessionId: string, options: SpawnOptions, private claudeCliPath?: string) {
@@ -372,6 +374,21 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     });
     this.emit('message', controlMsg);
 
+    // Check if user already responded (pre-responded before canUseTool was called)
+    const preResponded = this.preRespondedControls.get(requestId);
+    if (preResponded) {
+      this.preRespondedControls.delete(requestId);
+      console.log('[ClaudeCode] Using pre-responded decision for:', requestId, preResponded.decision);
+      if (preResponded.decision === 'allow') {
+        const updatedInput = preResponded.payload?.answers
+          ? { ...toolInput, answers: preResponded.payload.answers }
+          : toolInput;
+        return Promise.resolve({ behavior: 'allow' as const, updatedInput, toolUseID });
+      } else {
+        return Promise.resolve({ behavior: 'deny' as const, message: 'User denied the tool', interrupt: true, toolUseID });
+      }
+    }
+
     return new Promise((resolve) => {
       this.pendingControls.set(requestId, {
         toolInput,
@@ -406,7 +423,12 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
   respondControl(requestId: string, decision: ControlDecision, payload?: Record<string, unknown>): void {
     const pending = this.pendingControls.get(requestId);
     if (!pending) {
-      console.warn('[ClaudeCode] No pending control for:', requestId);
+      // User responded before canUseTool was called (e.g., clicked Allow on a
+      // pre-rendered card). Cache the decision for when canUseTool arrives.
+      console.log('[ClaudeCode] Pre-responding control:', requestId, decision);
+      this.preRespondedControls.set(requestId, { decision, payload });
+      // Auto-cleanup after 5 minutes
+      setTimeout(() => this.preRespondedControls.delete(requestId), 5 * 60 * 1000);
       return;
     }
 
@@ -448,6 +470,7 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     // Unresolved promises will be GC'd when the process exits.
     this.abortController.abort();
     this.pendingControls.clear();
+    this.preRespondedControls.clear();
     this.status = 'stopped';
     this.emit('exit', 0);
   }
