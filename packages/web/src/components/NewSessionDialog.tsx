@@ -1,12 +1,17 @@
 import React, { useState } from 'react';
 import { wsCreateSession } from '../hooks/useWebSocket';
+import { useLobbyStore } from '../stores/lobby-store';
 
 interface Props {
   onClose: () => void;
 }
 
 export default function NewSessionDialog({ onClose }: Props) {
-  const [adapter, setAdapter] = useState<'claude-code' | 'codex-cli' | 'opencode'>('claude-code');
+  const serverConfig = useLobbyStore((s) => s.serverConfig);
+  const defaultAdapter = (serverConfig.defaultAdapter ?? 'claude-code') as 'claude-code' | 'codex-cli' | 'opencode';
+  const defaultMessageMode = serverConfig.defaultMessageMode ?? 'msg-tidy';
+
+  const [adapter, setAdapter] = useState<'claude-code' | 'codex-cli' | 'opencode'>(defaultAdapter);
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
   const [model, setModel] = useState('');
@@ -14,6 +19,7 @@ export default function NewSessionDialog({ onClose }: Props) {
   const [permissionMode, setPermissionMode] = useState('default');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [initialPrompt, setInitialPrompt] = useState('');
+  const [messageMode, setMessageMode] = useState(defaultMessageMode);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,6 +33,7 @@ export default function NewSessionDialog({ onClose }: Props) {
         model: model.trim() || undefined,
         permissionMode: permissionMode !== 'default' ? permissionMode : undefined,
         systemPrompt: systemPrompt.trim() || undefined,
+        messageMode,
       },
       name.trim() || undefined,
     );
@@ -163,6 +170,20 @@ export default function NewSessionDialog({ onClose }: Props) {
                     <option value="default">Default (Prompt for dangerous ops)</option>
                     <option value="plan">Plan (Read-only)</option>
                     <option value="bypassPermissions">Full Auto (No prompts)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">
+                    Message Mode
+                  </label>
+                  <select
+                    value={messageMode}
+                    onChange={(e) => setMessageMode(e.target.value)}
+                    className="w-full bg-gray-800 text-gray-100 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="msg-tidy">Tidy (collapse tool calls)</option>
+                    <option value="msg-only">Messages only</option>
+                    <option value="msg-total">All messages</option>
                   </select>
                 </div>
                 <div>
