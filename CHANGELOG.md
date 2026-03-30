@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.2 (2026-03-30)
+
+### Features
+
+- **WeCom image/file decryption** — Download and decrypt WeCom encrypted media using SDK `decryptFile` with per-message `aeskey`. Images and files are now properly saved as readable local files.
+- **IM attachment local download** — IM attachments (images, files, voice) are downloaded to session's `.openlobby-cache/` directory and passed as `[Attached: /path]` to agent sessions, matching Web upload behavior.
+- **Discover session CLI filter** — DiscoverDialog gains adapter filter tabs (All/CC/CX) when multiple adapter types have sessions.
+
+### Bug Fixes
+
+- **MCP server missing from npm package** — `mcp-server.ts` was bundled into `bin.js` but LobbyManager references it as a separate subprocess file. Now built as standalone `dist/mcp-server.js` and included in npm tarball.
+- **Codex session discovery** — `extractCodexMeta` read only 4KB but Codex `session_meta` lines can be 15KB+. Increased to 64KB, extract UUID from filename, relaxed empty session filter. Sessions found: 3 → 25.
+- **Discovered sessions sort order** — Sessions were grouped by adapter (all CC then all CX) instead of unified time sort. Now sorted by `lastActiveAt` across all adapters.
+
+### Documentation
+
+- README: npm global install as primary method, FAQ section with 6 common issues
+
 ## v0.3.1 (2026-03-29)
 
 ### Features
