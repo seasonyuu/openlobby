@@ -780,11 +780,11 @@ export class ChannelRouterImpl implements ChannelRouter {
           const statsMsg = `🔧 已完成 ${agg.totalCalls} 次工具调用: ${statsList}`;
           this.toolAggregates.delete(identityKey);
 
-          // Store buffer before async chain
+          // Clear stream state SYNCHRONOUSLY so that the subsequent 'result' message
+          // won't find buffered text and re-send it (result arrives before .then() runs)
           const stateForTidy = this.streamStates.get(identityKey);
-          if (stateForTidy) {
-            stateForTidy.buffer = text;
-          }
+          if (stateForTidy?.flushTimer) clearTimeout(stateForTidy.flushTimer);
+          this.streamStates.delete(identityKey);
 
           // Chain: send stats → then send assistant reply (sequential, not concurrent)
           provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
