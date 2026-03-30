@@ -9,7 +9,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
-import type { SessionSummary } from '@openlobby/core';
+import type { SessionSummary, MessageMode } from '@openlobby/core';
 import type { SessionManager } from './session-manager.js';
 
 export interface SlashCommandContext {
@@ -27,6 +27,10 @@ export interface SlashCommandResult {
   navigateSessionId?: string;
   /** If the command destroyed a session */
   destroyedSessionId?: string;
+  /** If the command rebuilt a session */
+  rebuiltSessionId?: string;
+  /** If the command configured a session */
+  configuredSessionId?: string;
 }
 
 /**
@@ -56,6 +60,12 @@ export async function handleSlashCommand(
       return await cmdStop(ctx);
     case '/rm':
       return await cmdRm(ctx, arg);
+    case '/new':
+      return null; // Needs session context — handled by caller
+    case '/msg-only':
+    case '/msg-tidy':
+    case '/msg-total':
+      return null; // Needs session context — handled by caller
     case '/info':
       return null; // Needs session context — handled by caller
     case '/bind':
@@ -80,6 +90,10 @@ function cmdHelp(): SlashCommandResult {
       '`/stop` — 打断当前模型回复',
       '`/rm <id|name>` — 销毁指定会话',
       '`/info` — 查看当前会话信息',
+      '`/new` — 重建当前会话的 CLI 进程',
+      '`/msg-only` — 仅推送回复内容',
+      '`/msg-tidy` — 工具调用折叠为摘要',
+      '`/msg-total` — 推送全部消息',
       '`/bind <sessionId>` — 绑定到指定会话 (IM)',
       '`/unbind` — 解绑当前会话 (IM)',
     ].join('\n'),
