@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.4.0 (2026-03-30)
+
+### Features
+
+- **OpenCode adapter** — Full integration of OpenCode (sst/opencode) as a third built-in adapter: AgentProcess + AgentAdapter via HTTP REST + SSE, SQLite-based cross-project session discovery
+- **OpenCode in Web UI** — DiscoverDialog filter tabs, Sidebar labels, RoomHeader title, NewSessionDialog button all support OpenCode
+- **OpenCode in LobbyManager** — System prompt and MCP tool schemas (`lobby_create_session`, `lobby_import_session`) updated to accept `opencode` as adapter type
+
+### Bug Fixes
+
+- **fix(opencode): user messages appearing as assistant replies** — Track user message IDs from `message.updated` events; skip their parts in `handlePartUpdated` to prevent user input echoing in UI (b955cc5)
+- **fix(lobby-manager): stale UUID on session resume** — Validate session ID existence before resume to prevent errors with stale UUIDs (d84e8ab)
+- **fix(opencode): cross-project session discovery** — Use `sqlite3` CLI to query `~/.local/share/opencode/opencode.db` directly instead of scoped REST API (df80671)
+- **fix(opencode): permissionMode not persisted** — Read `permission_mode` from SQLite in `listSessions`/`getSessionInfo` (fe3a410)
+- **fix(web): session config not applied optimistically** — Update session config in Zustand store immediately after Apply, without waiting for server push (755029d)
+- **fix(claude-code): pre-responded approvals for concurrent tools** — Handle approvals that resolve before the approval card is rendered (bac1314)
+- **fix(web): approval cards cleared on single response** — Only remove the individual responded card, not all pending cards (5daef70)
+- **fix(web): infinite re-render loop causing black screen** — Fix dependency cycle in useEffect causing blank UI (c36d74f)
+- **fix(web): multiple concurrent approval cards** — Support rendering multiple simultaneous tool approval requests per session (b780a7c)
+- **fix: permissionMode not restored on lazy resume** — Persist to SQLite and restore on session resume (cb115e2)
+- **fix: Telegram provider bundled as dynamic import** — Bundle as built-in to avoid runtime import resolution failures (2943f94)
+- **fix(claude-code): ProcessTransport crash on session kill** — Prevent unhandled errors when transport is destroyed (d7c5415)
+
+### Documentation
+
+- Add `/stop` command design spec
+- Update `new-cli-adapter` skill with OpenCode lessons: Phase 9 (frontend integration checklist), Phase 10 (port conflict prevention), SQLite discovery pattern, monorepo dependency boundaries
+
+### Other Changes
+
+- OpenCode adapter integration test using contract suite (4384e05)
+
 ## v0.3.3 (2026-03-30)
 
 ### Bug Fixes

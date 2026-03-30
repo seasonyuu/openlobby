@@ -38,7 +38,7 @@ Environment Variables:
     }
     if (args[i] === '--version' || args[i] === '-v') {
       // Version is replaced at build time
-      console.log('0.3.3');
+      console.log('0.4.0');
       process.exit(0);
     }
   }
