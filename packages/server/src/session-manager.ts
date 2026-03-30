@@ -777,6 +777,14 @@ export class SessionManager {
     }
   }
 
+  async interruptSession(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.process.interrupt();
+    // Status update and broadcast are driven by adapter emit('idle')
+    // via the existing wireProcessEvents 'idle' handler.
+  }
+
   async destroySession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (session) {
