@@ -364,6 +364,7 @@ export class SessionManager {
       process,
       messageCount: 0,
       model: options.model,
+      permissionMode: options.permissionMode,
       origin,
       planMode: false,
     };
@@ -558,6 +559,7 @@ export class SessionManager {
           lastActiveAt: row.last_active_at,
           messageCount: 0,
           model: row.model ?? undefined,
+          permissionMode: row.permission_mode ?? undefined,
           cwd: row.cwd,
           origin: row.origin as 'lobby' | 'cli',
           resumeCommand: resumeCmd,
@@ -692,6 +694,7 @@ export class SessionManager {
           lastActiveAt: row.last_active_at,
           messageCount: 0,
           model: row.model ?? undefined,
+          permissionMode: row.permission_mode ?? undefined,
           cwd: row.cwd,
           origin: row.origin as 'lobby' | 'cli',
           resumeCommand: (() => {
