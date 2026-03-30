@@ -144,6 +144,20 @@ export function handleWebSocket(
             // null = unknown command, fall through to send as message
           }
 
+          // Handle /stop in any session (not just LM)
+          if (data.content.trim().toLowerCase() === '/stop') {
+            await sessionManager.interruptSession(data.sessionId);
+            const replyMsg: LobbyMessage = {
+              id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              sessionId: data.sessionId,
+              timestamp: Date.now(),
+              type: 'assistant',
+              content: '⏹ 已打断模型回复。',
+            };
+            send({ type: 'message', sessionId: data.sessionId, message: replyMsg });
+            break;
+          }
+
           channelRouter?.setMessageOrigin(data.sessionId, 'web');
           await sessionManager.sendMessage(data.sessionId, data.content);
           break;
