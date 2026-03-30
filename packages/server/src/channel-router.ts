@@ -7,6 +7,7 @@ import type {
   InboundChannelMessage,
   LobbyMessage,
   SessionSummary,
+  MessageMode,
 } from '@openlobby/core';
 import { toIdentityKey } from '@openlobby/core';
 import type Database from 'better-sqlite3';
@@ -57,6 +58,14 @@ interface StreamState {
   flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/** Per-identity tool call aggregation for msg-tidy mode */
+interface ToolAggregateState {
+  toolCounts: Record<string, number>;
+  lastToolName: string;
+  lastToolContent: string;
+  totalCalls: number;
+}
+
 /** Per-identity state for sequential AskUserQuestion interaction */
 interface PendingQuestionState {
   sessionId: string;
@@ -87,6 +96,9 @@ export class ChannelRouterImpl implements ChannelRouter {
 
   /** Track message origin per session turn: 'web' or 'im' */
   private messageOriginBySession = new Map<string, 'web' | 'im'>();
+
+  /** Per-identity tool aggregation for msg-tidy mode */
+  private toolAggregates = new Map<string, ToolAggregateState>();
 
   /** Per-identity state for sequential AskUserQuestion interaction */
   private pendingQuestions = new Map<string, PendingQuestionState>();
@@ -393,6 +405,12 @@ export class ChannelRouterImpl implements ChannelRouter {
         return this.cmdUnbind(identityKey);
       case '/goto':
         return this.cmdGoto(identityKey, arg);
+      case '/new':
+        return await this.cmdNew(identityKey);
+      case '/msg-only':
+      case '/msg-tidy':
+      case '/msg-total':
+        return this.cmdMsgMode(identityKey, cmd.slice(1) as MessageMode);
     }
 
     // Delegate to shared handler for common commands (/help, /ls, /add, /rm)
@@ -463,6 +481,36 @@ export class ChannelRouterImpl implements ChannelRouter {
     }
     await this.sessionManager.interruptSession(sessionId);
     return '⏹ 已打断模型回复。';
+  }
+
+  /** /new — Rebuild CLI session */
+  private async cmdNew(identityKey: string): Promise<string> {
+    const binding = getBinding(this.db, identityKey);
+    const sessionId = binding?.active_session_id;
+    if (!sessionId) {
+      return '⚠️ 当前未绑定任何会话。';
+    }
+    try {
+      await this.sessionManager.rebuildSession(sessionId);
+      return '✅ CLI 会话已重建。';
+    } catch (err) {
+      return `⚠️ 重建失败: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /** /msg-* — Switch message mode */
+  private cmdMsgMode(identityKey: string, mode: MessageMode): string {
+    const binding = getBinding(this.db, identityKey);
+    const sessionId = binding?.active_session_id;
+    if (!sessionId) {
+      return '⚠️ 当前未绑定任何会话。';
+    }
+    try {
+      this.sessionManager.configureSession(sessionId, { messageMode: mode } as any);
+      return `✅ 消息模式已切换为 \`${mode}\``;
+    } catch (err) {
+      return `⚠️ 切换失败: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   /** /exit — Return to Lobby Manager */
@@ -575,6 +623,14 @@ export class ChannelRouterImpl implements ChannelRouter {
       return;
     }
 
+    // Get message mode for this session
+    const messageMode = this.sessionManager.getSessionMode(sessionId);
+
+    // msg-only: suppress tool_use and tool_result (control always passes)
+    if (messageMode === 'msg-only' && (msg.type === 'tool_use' || msg.type === 'tool_result')) {
+      return;
+    }
+
     const bindingRow = this.resolveResponseBinding(sessionId);
     if (!bindingRow) {
       // Only log for non-trivial message types (skip noisy stream_delta)
@@ -631,6 +687,41 @@ export class ChannelRouterImpl implements ChannelRouter {
         const toolName = String(msg.meta?.toolName ?? 'unknown');
         const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2);
 
+        // msg-tidy: aggregate tool calls, show think with stats + last tool preview
+        if (messageMode === 'msg-tidy') {
+          let agg = this.toolAggregates.get(identityKey);
+          if (!agg) {
+            agg = { toolCounts: {}, lastToolName: '', lastToolContent: '', totalCalls: 0 };
+            this.toolAggregates.set(identityKey, agg);
+          }
+          agg.toolCounts[toolName] = (agg.toolCounts[toolName] ?? 0) + 1;
+          agg.lastToolName = toolName;
+          agg.lastToolContent = raw.slice(0, 100);
+          agg.totalCalls++;
+
+          const statsChain = Object.entries(agg.toolCounts)
+            .map(([name, count]) => `${name}(${count})`)
+            .join(' → ');
+
+          // Ensure think stream is active
+          if (!this.streamStates.has(identityKey)) {
+            const state: StreamState = { buffer: '', intermediateCount: 0, lastFlushAt: 0, flushTimer: null };
+            this.streamStates.set(identityKey, state);
+          }
+          const state = this.streamStates.get(identityKey)!;
+
+          if (state.intermediateCount < MAX_INTERMEDIATE_MSGS) {
+            const thinkText = `<think>\n【${sessionName}】正在处理... 🔧 ${statsChain}\n──\n📄 ${toolName}: ${agg.lastToolContent}\n</think>`;
+            provider.sendMessage({ identity, text: thinkText, kind: 'typing' })
+              .catch((err) => console.error('[ChannelRouter] tidy think error:', err));
+            state.intermediateCount++;
+            state.lastFlushAt = Date.now();
+          }
+          break; // Don't send individual tool_use message
+        }
+
+        // msg-total: existing behavior below...
+
         // Ensure a think stream is active
         if (!this.streamStates.has(identityKey)) {
           const state: StreamState = { buffer: '', intermediateCount: 0, lastFlushAt: 0, flushTimer: null };
@@ -680,6 +771,18 @@ export class ChannelRouterImpl implements ChannelRouter {
         const text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
         if (!text.trim()) break;
 
+        // msg-tidy: send final tool stats before the reply
+        const agg = this.toolAggregates.get(identityKey);
+        if (messageMode === 'msg-tidy' && agg && agg.totalCalls > 0) {
+          const statsList = Object.entries(agg.toolCounts)
+            .map(([name, count]) => `${name}(${count})`)
+            .join(', ');
+          const statsMsg = `🔧 已完成 ${agg.totalCalls} 次工具调用: ${statsList}`;
+          provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
+            .catch((err) => console.error('[ChannelRouter] tidy stats error:', err));
+          this.toolAggregates.delete(identityKey);
+        }
+
         // Store the full assistant text so result can include it
         const state = this.streamStates.get(identityKey);
         if (state) {
@@ -696,6 +799,18 @@ export class ChannelRouterImpl implements ChannelRouter {
       // If assistant already sent the reply, result just has stats — send only if meaningful.
       // If assistant was never sent (no stream), use the accumulated buffer.
       case 'result': {
+        // Clean up tool aggregation state
+        const tidyAgg = this.toolAggregates.get(identityKey);
+        if (tidyAgg && tidyAgg.totalCalls > 0 && messageMode === 'msg-tidy') {
+          const statsList = Object.entries(tidyAgg.toolCounts)
+            .map(([name, count]) => `${name}(${count})`)
+            .join(', ');
+          const statsMsg = `🔧 已完成 ${tidyAgg.totalCalls} 次工具调用: ${statsList}`;
+          provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
+            .catch((err) => console.error('[ChannelRouter] tidy stats error:', err));
+        }
+        this.toolAggregates.delete(identityKey);
+
         const state = this.streamStates.get(identityKey);
         const bufferedText = state?.buffer ?? '';
 
@@ -715,6 +830,26 @@ export class ChannelRouterImpl implements ChannelRouter {
 
       // ── tool_result: send as message, then re-enter think state ──
       case 'tool_result': {
+        // msg-tidy: skip individual tool_result, just refresh think
+        if (messageMode === 'msg-tidy') {
+          const state = this.streamStates.get(identityKey);
+          if (state && state.intermediateCount < MAX_INTERMEDIATE_MSGS) {
+            const agg = this.toolAggregates.get(identityKey);
+            const statsChain = agg
+              ? Object.entries(agg.toolCounts).map(([name, count]) => `${name}(${count})`).join(' → ')
+              : '';
+            provider.sendMessage({
+              identity,
+              text: `<think>\n【${sessionName}】正在处理... 🔧 ${statsChain}\n</think>`,
+              kind: 'typing',
+            }).catch((err) => console.error('[ChannelRouter] tidy re-think error:', err));
+            state.intermediateCount++;
+            state.lastFlushAt = Date.now();
+          }
+          break; // Don't send individual tool_result
+        }
+
+        // msg-total: existing behavior below...
         const toolName = String(msg.meta?.toolName ?? '');
         const isError = msg.meta?.isError === true;
         const raw = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content, null, 2);
