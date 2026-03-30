@@ -17,7 +17,7 @@ Before writing any code, investigate the target CLI thoroughly:
    - SDK / library (npm package with async API)
    - Subprocess with JSON-RPC over stdio
    - Subprocess with line-based stdout/stderr
-   - HTTP / REST API
+   - HTTP / REST API + SSE (Server-Sent Events)
    - WebSocket
 
 2. **Authentication** — API keys, environment variables, config files, OAuth tokens.
@@ -29,8 +29,15 @@ Before writing any code, investigate the target CLI thoroughly:
 5. **Tool approval system** — Does the CLI ask for permission before running tools? What is the callback/hook mechanism?
 
 6. **History storage** — Where does the CLI persist conversation history on disk? (e.g. `~/.cli-name/sessions/`)
+   - **CRITICAL**: Verify the actual storage format (JSONL files, SQLite database, etc.)
+   - **CRITICAL**: Check if storage is per-project or centralized (e.g. `~/.cli-name/global.db` vs. `project/.cli/session.jsonl`)
 
 7. **Commands / skills listing** — Is there an API to enumerate available slash commands or skills?
+
+8. **API scoping behavior** — If the CLI has a REST/RPC API:
+   - Is `session.list()` global or scoped to the current project/directory?
+   - Can you query sessions across all projects, or only within the server's working directory?
+   - **Test empirically**: Start the CLI server in one directory, query for sessions created in another directory
 
 Document your findings in a brief summary before proceeding.
 
@@ -80,6 +87,12 @@ packages/adapter-<name>/
 ```
 
 Add any CLI-specific SDK or library to `dependencies`.
+
+**CRITICAL — Monorepo Dependency Boundaries**:
+- Adapter code lives in `@openlobby/core`, which has minimal dependencies
+- If you need a heavy native dependency (e.g. `better-sqlite3`), consider using system tools instead (e.g. `sqlite3` CLI via `execSync`)
+- Only add dependencies to `@openlobby/core` if they're truly required and lightweight
+- Server-only dependencies belong in `@openlobby/server`, not core
 
 ### tsconfig.json
 
@@ -149,6 +162,13 @@ Read the session's JSONL/log file from disk. Parse each entry and map to `LobbyM
 
 #### `discoverSessions(cwd?)`
 Scan the CLI's session storage directory. Parse metadata from filenames or file contents. Return `SessionSummary[]`.
+
+**CRITICAL**: Prefer reading from disk storage directly over using the CLI's API:
+- If the CLI stores sessions in SQLite, use `execSync('sqlite3 -json <db_path> "SELECT ..."')` to query directly
+- If the CLI stores sessions in JSONL files, read and parse them directly from disk
+- **Why**: CLI APIs (especially REST/RPC) are often scoped to the current project/directory and won't return sessions from other projects
+- **Example**: OpenCode's `session.list()` only returns sessions for the server's working directory, not all sessions in `~/.local/share/opencode/opencode.db`
+- Reading from disk ensures you discover ALL sessions, not just those visible to a running server instance
 
 #### `getResumeCommand(sessionId)`
 Return the shell command string to resume, e.g. `'<cli> --resume <sessionId>'`.
@@ -349,6 +369,55 @@ The server auto-discovers packages named `openlobby-adapter-<name>` at startup v
 
 ---
 
+## Phase 9: Frontend and System Integration Checklist
+
+After the adapter is built and working, update these locations to fully integrate it into OpenLobby:
+
+### 9.1 Frontend UI Labels
+
+Add the new adapter to all UI components that display adapter names:
+
+1. **`packages/web/src/components/DiscoverDialog.tsx`**:
+   - Line ~113: Add adapter abbreviation mapping (e.g. `'new-cli' → 'NC'`) in filter tab label
+   - Line ~214: Add same mapping in `SessionRow` component's `adapterLabel`
+
+2. **`packages/web/src/components/Sidebar.tsx`**:
+   - Add adapter abbreviation mapping in session card label rendering
+
+3. **`packages/web/src/components/RoomHeader.tsx`**:
+   - Add full adapter name mapping (e.g. `'new-cli' → 'New CLI'`)
+
+4. **`packages/web/src/components/NewSessionDialog.tsx`**:
+   - Add new adapter button with appropriate color theme
+   - Update prompt placeholder text to include new adapter
+   - Update model placeholder text with adapter-specific model examples
+
+### 9.2 LobbyManager System Prompt
+
+**`packages/server/src/lobby-manager.ts`**:
+- Update the system prompt to mention the new adapter in the adapter list (around line 45)
+- Example: Change `adapter: claude-code (default), codex-cli, or opencode` to include your new adapter
+
+### 9.3 MCP Tool Schemas
+
+**`packages/server/src/mcp-server.ts`**:
+- Add the new adapter name to the `z.enum()` in `lobby_create_session` tool schema
+- Add the new adapter name to the `z.enum()` in `lobby_import_session` tool schema
+
+**Why this matters**: Without these updates, the LobbyManager (meta-agent) won't know about the new adapter and will refuse to create sessions for it.
+
+---
+
+## Phase 10: Port Conflict Prevention
+
+If your adapter spawns a server subprocess (HTTP/WebSocket):
+
+- **Use dynamic port allocation**: Pass `port: 0` or equivalent to let the OS assign an available port
+- **Why**: Default ports may already be in use from previous test runs or other services
+- **Example**: `createServer({ port: 0 })` instead of `createServer({ port: 4096 })`
+
+---
+
 ## Message Type Mapping Reference
 
 When converting CLI output to `LobbyMessage`, use this mapping:
@@ -370,13 +439,14 @@ When converting CLI output to `LobbyMessage`, use this mapping:
 
 Use these as implementation examples. Source files are in `packages/core/src/adapters/`.
 
-| Aspect            | Claude Code (`claude-code.ts`)                                | Codex CLI (`codex-cli.ts`)                                |
-|------------------ |-------------------------------------------------------------- |---------------------------------------------------------- |
-| Communication     | SDK `query()` async generator                                 | `app-server --stdio` subprocess + JSON-RPC                |
-| Session ID        | From `system` message `session_id` field                      | From `thread/start` result `thread.id`                    |
-| Tool approval     | `canUseTool` callback returning Promise                       | `requestApproval` RPC resolved via JSON-RPC response      |
-| History storage   | `~/.claude/projects/<dir>/<id>.jsonl`                         | `~/.codex/sessions/YYYY/MM/DD/<id>.jsonl`                 |
-| Commands          | `query.supportedCommands()` SDK API                           | `skills/list` JSON-RPC method                             |
-| Settings          | `settingSources: ['user', 'project', 'local']`                | Automatic (native subprocess)                             |
-| Plan mode         | System prompt injection + tool filtering in `canUseTool`      | System prompt injection via `config/value/write` RPC      |
-| Resume            | SDK `resume` option                                           | `thread/resume` RPC                                       |
+| Aspect            | Claude Code (`claude-code.ts`)                                | Codex CLI (`codex-cli.ts`)                                | OpenCode (`opencode.ts`)                                  |
+|------------------ |-------------------------------------------------------------- |---------------------------------------------------------- |---------------------------------------------------------- |
+| Communication     | SDK `query()` async generator                                 | `app-server --stdio` subprocess + JSON-RPC                | HTTP REST + SSE via `@opencode-ai/sdk`                    |
+| Session ID        | From `system` message `session_id` field                      | From `thread/start` result `thread.id`                    | From `createOpencode()` initial session or REST response  |
+| Tool approval     | `canUseTool` callback returning Promise                       | `requestApproval` RPC resolved via JSON-RPC response      | SSE `permission.updated` event + REST POST response       |
+| History storage   | `~/.claude/projects/<dir>/<id>.jsonl`                         | `~/.codex/sessions/YYYY/MM/DD/<id>.jsonl`                 | `~/.local/share/opencode/opencode.db` (SQLite, centralized)|
+| Discovery method  | Read JSONL files from disk                                    | Read JSONL files from disk                                | Query SQLite via `sqlite3` CLI (NOT REST API)             |
+| Commands          | `query.supportedCommands()` SDK API                           | `skills/list` JSON-RPC method                             | Static fallback list                                      |
+| Settings          | `settingSources: ['user', 'project', 'local']`                | Automatic (native subprocess)                             | Automatic (native subprocess)                             |
+| Plan mode         | System prompt injection + tool filtering in `canUseTool`      | System prompt injection via `config/value/write` RPC      | System prompt injection + tool filtering in approval      |
+| Resume            | SDK `resume` option                                           | `thread/resume` RPC                                       | `client.session.promptAsync()` with existing session ID   |
