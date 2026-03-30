@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useLobbyStore } from '../stores/lobby-store';
-import { wsTogglePlanMode, wsRequestCompletions } from '../hooks/useWebSocket';
+import { wsTogglePlanMode, wsRequestCompletions, wsInterruptSession } from '../hooks/useWebSocket';
 import SlashCommandMenu, {
   filterCommands,
   type SlashCommand,
@@ -56,6 +56,7 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
   const activeSession = useLobbyStore((s) =>
     s.activeSessionId ? s.sessions[s.activeSessionId] : undefined,
   );
+  const isRunning = activeSession?.status === 'running' || activeSession?.status === 'awaiting_approval';
   const sessionCommands = useLobbyStore((s) =>
     s.activeSessionId ? s.commandsBySession[s.activeSessionId] : undefined,
   );
@@ -357,13 +358,22 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
           style={{ minHeight: '42px' }}
         />
 
-        <button
-          onClick={handleSubmit}
-          disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
-          className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 text-white font-medium text-sm transition-colors"
-        >
-          {uploading ? '...' : 'Send'}
-        </button>
+        {isRunning ? (
+          <button
+            onClick={() => activeSessionId && wsInterruptSession(activeSessionId)}
+            className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-medium text-sm transition-colors"
+          >
+            ⏹ Stop
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            disabled={disabled || uploading || (!value.trim() && attachments.length === 0)}
+            className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-30 disabled:hover:bg-blue-600 text-white font-medium text-sm transition-colors"
+          >
+            {uploading ? '...' : 'Send'}
+          </button>
+        )}
       </div>
 
       {isDragOver && (

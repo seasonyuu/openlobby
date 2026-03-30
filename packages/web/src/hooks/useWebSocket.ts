@@ -249,6 +249,10 @@ export function wsDestroySession(sessionId: string): void {
   wsSend({ type: 'session.destroy', sessionId });
 }
 
+export function wsInterruptSession(sessionId: string): void {
+  wsSend({ type: 'session.interrupt', sessionId });
+}
+
 export function wsRequestSessionHistory(sessionId: string): void {
   wsSend({ type: 'session.history', sessionId });
   wsSend({ type: 'session.view', sessionId });
