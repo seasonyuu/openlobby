@@ -376,6 +376,18 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
     console.log('[Codex] Options updated:', Object.keys(opts));
   }
 
+  interrupt(): void {
+    if (this.status !== 'running' && this.status !== 'awaiting_approval') return;
+    console.log('[Codex] Interrupting current generation');
+    this.killedIntentionally = true;
+    if (this.childProcess) {
+      this.childProcess.kill();
+      this.childProcess = null;
+    }
+    this.status = 'idle';
+    this.emit('idle');
+  }
+
   kill(): void {
     console.log('[Codex] Killing process');
     this.killedIntentionally = true;
