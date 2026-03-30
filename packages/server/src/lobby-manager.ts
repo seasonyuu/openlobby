@@ -186,22 +186,43 @@ export class LobbyManager {
     if (this.db) {
       const existingRow = getSessionByOrigin(this.db, 'lobby-manager');
       if (existingRow) {
-        try {
-          const session = await this.sessionManager.resumeSession(
-            existingRow.id,
-            this.adapterName,
-            this.buildSpawnOptions(),
-            'Lobby Manager',
-            'lobby-manager',
-          );
-          this.sessionId = session.id;
-          console.log(`[LM] Resumed existing session: ${this.sessionId}`);
-          this.trackSessionIdChanges();
-          return;
-        } catch (err) {
-          console.warn(`[LM] Failed to resume session ${existingRow.id}, creating fresh:`, err);
-          deleteSession(this.db, existingRow.id);
+        // Validate the session ID exists in the CLI's storage before attempting resume.
+        // If the ID is a stale UUID that was never synced to the real CLI session ID,
+        // resume will silently succeed but query() will fail with exit code 1.
+        const adapter = this.adapters.get(this.adapterName);
+        let sessionValid = true;
+        if (adapter) {
+          try {
+            const history = await adapter.readSessionHistory(existingRow.id);
+            if (history.length === 0) {
+              console.warn(`[LM] Session ${existingRow.id} has no history in CLI storage — may be stale UUID`);
+              sessionValid = false;
+            }
+          } catch {
+            sessionValid = false;
+          }
         }
+
+        if (sessionValid) {
+          try {
+            const session = await this.sessionManager.resumeSession(
+              existingRow.id,
+              this.adapterName,
+              this.buildSpawnOptions(),
+              'Lobby Manager',
+              'lobby-manager',
+            );
+            this.sessionId = session.id;
+            console.log(`[LM] Resumed existing session: ${this.sessionId}`);
+            this.trackSessionIdChanges();
+            return;
+          } catch (err) {
+            console.warn(`[LM] Failed to resume session ${existingRow.id}, creating fresh:`, err);
+          }
+        } else {
+          console.warn(`[LM] Stale session ${existingRow.id}, creating fresh`);
+        }
+        deleteSession(this.db, existingRow.id);
       }
     }
 
