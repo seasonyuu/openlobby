@@ -441,12 +441,13 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
 
   kill(): void {
     console.log('[ClaudeCode] Killing process');
-    // Resolve all pending tool approvals so promises don't hang
-    for (const [id, pending] of this.pendingControls) {
-      pending.resolve({ behavior: 'deny', message: 'Session killed' });
-    }
-    this.pendingControls.clear();
+    // Abort first to close the transport, then clear pending controls.
+    // Do NOT resolve pending canUseTool promises — resolving them causes
+    // SDK to call ProcessTransport.write() on an already-closed transport,
+    // throwing "ProcessTransport is not ready for writing".
+    // Unresolved promises will be GC'd when the process exits.
     this.abortController.abort();
+    this.pendingControls.clear();
     this.status = 'stopped';
     this.emit('exit', 0);
   }
