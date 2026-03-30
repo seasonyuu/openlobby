@@ -18,6 +18,7 @@ export type ClientMessage =
   | { type: 'session.create'; adapterName: string; options: SpawnOptions; displayName?: string }
   | { type: 'session.resume'; sessionId: string }
   | { type: 'session.destroy'; sessionId: string }
+  | { type: 'session.interrupt'; sessionId: string }
   | { type: 'session.list' }
   | { type: 'session.history'; sessionId: string }
   | { type: 'message.send'; sessionId: string; content: string }

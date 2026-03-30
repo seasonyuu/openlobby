@@ -76,6 +76,7 @@ export interface AgentProcess extends EventEmitter {
   respondControl(requestId: string, decision: ControlDecision, payload?: Record<string, unknown>): void;
   updateOptions(opts: Partial<SpawnOptions>): void;
   setPlanMode?(enabled: boolean): void;
+  interrupt(): void;
   kill(): void;
 }
 
