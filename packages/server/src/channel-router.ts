@@ -771,25 +771,41 @@ export class ChannelRouterImpl implements ChannelRouter {
         const text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
         if (!text.trim()) break;
 
-        // msg-tidy: send final tool stats before the reply
+        // msg-tidy: send final tool stats before the reply (must be sequential to avoid race)
         const agg = this.toolAggregates.get(identityKey);
         if (messageMode === 'msg-tidy' && agg && agg.totalCalls > 0) {
           const statsList = Object.entries(agg.toolCounts)
             .map(([name, count]) => `${name}(${count})`)
             .join(', ');
           const statsMsg = `🔧 已完成 ${agg.totalCalls} 次工具调用: ${statsList}`;
-          provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
-            .catch((err) => console.error('[ChannelRouter] tidy stats error:', err));
           this.toolAggregates.delete(identityKey);
+
+          // Store buffer before async chain
+          const stateForTidy = this.streamStates.get(identityKey);
+          if (stateForTidy) {
+            stateForTidy.buffer = text;
+          }
+
+          // Chain: send stats → then send assistant reply (sequential, not concurrent)
+          provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
+            .then(() => {
+              const formatted = formatAssistant(sessionName, text);
+              this.finishStream(identityKey, provider, identity, formatted);
+            })
+            .catch((err) => {
+              console.error('[ChannelRouter] tidy stats error:', err);
+              // Still send the reply even if stats failed
+              const formatted = formatAssistant(sessionName, text);
+              this.finishStream(identityKey, provider, identity, formatted);
+            });
+          break; // Skip normal handling below — it's handled in the promise chain
         }
 
-        // Store the full assistant text so result can include it
+        // Normal (non-tidy or no tool calls): existing behavior
         const state = this.streamStates.get(identityKey);
         if (state) {
-          state.buffer = text; // Replace delta buffer with final assembled text
+          state.buffer = text;
         }
-
-        // Send the actual reply content
         const formatted = formatAssistant(sessionName, text);
         this.finishStream(identityKey, provider, identity, formatted);
         break;
@@ -799,23 +815,44 @@ export class ChannelRouterImpl implements ChannelRouter {
       // If assistant already sent the reply, result just has stats — send only if meaningful.
       // If assistant was never sent (no stream), use the accumulated buffer.
       case 'result': {
-        // Clean up tool aggregation state
         const tidyAgg = this.toolAggregates.get(identityKey);
-        if (tidyAgg && tidyAgg.totalCalls > 0 && messageMode === 'msg-tidy') {
-          const statsList = Object.entries(tidyAgg.toolCounts)
-            .map(([name, count]) => `${name}(${count})`)
-            .join(', ');
-          const statsMsg = `🔧 已完成 ${tidyAgg.totalCalls} 次工具调用: ${statsList}`;
-          provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
-            .catch((err) => console.error('[ChannelRouter] tidy stats error:', err));
-        }
         this.toolAggregates.delete(identityKey);
 
         const state = this.streamStates.get(identityKey);
         const bufferedText = state?.buffer ?? '';
 
-        // If there's unsent buffered content (stream_delta accumulated but no assistant arrived),
-        // send it now as the final reply
+        // If msg-tidy has pending stats, send them first (chained to avoid race)
+        if (tidyAgg && tidyAgg.totalCalls > 0 && messageMode === 'msg-tidy') {
+          const statsList = Object.entries(tidyAgg.toolCounts)
+            .map(([name, count]) => `${name}(${count})`)
+            .join(', ');
+          const statsMsg = `🔧 已完成 ${tidyAgg.totalCalls} 次工具调用: ${statsList}`;
+
+          provider.sendMessage({ identity, text: statsMsg, kind: 'message', format: 'markdown' })
+            .then(() => {
+              if (bufferedText.trim()) {
+                const formatted = formatAssistant(sessionName, bufferedText);
+                this.finishStream(identityKey, provider, identity, formatted);
+              } else {
+                if (state?.flushTimer) clearTimeout(state.flushTimer);
+                this.streamStates.delete(identityKey);
+              }
+            })
+            .catch((err) => {
+              console.error('[ChannelRouter] tidy stats error:', err);
+              // Still handle buffered text on error
+              if (bufferedText.trim()) {
+                const formatted = formatAssistant(sessionName, bufferedText);
+                this.finishStream(identityKey, provider, identity, formatted);
+              } else {
+                if (state?.flushTimer) clearTimeout(state.flushTimer);
+                this.streamStates.delete(identityKey);
+              }
+            });
+          break;
+        }
+
+        // No tidy stats: normal behavior
         if (bufferedText.trim()) {
           const formatted = formatAssistant(sessionName, bufferedText);
           this.finishStream(identityKey, provider, identity, formatted);
