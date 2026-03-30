@@ -53,6 +53,8 @@ export class TelegramBotProvider implements ChannelProvider {
   private typingTimers = new Map<string, ReturnType<typeof setInterval>>();
   /** Approval message ID cache: taskId → { chatId, messageId } for updateCard */
   private approvalMessageIds = new Map<string, { chatId: string; messageId: number }>();
+  /** Think message IDs per chat for editable typing messages */
+  private thinkMessages = new Map<string, number>();
   /**
    * Callback data shortener: Telegram limits callback_data to 64 bytes.
    * We map short keys (cb_xxxx, 7 chars) → original callbackData strings.
@@ -138,6 +140,7 @@ export class TelegramBotProvider implements ChannelProvider {
       clearInterval(timer);
     }
     this.typingTimers.clear();
+    this.thinkMessages.clear();
 
     if (this.webhookUrl) {
       try {
@@ -163,7 +166,17 @@ export class TelegramBotProvider implements ChannelProvider {
 
     switch (msg.kind) {
       case 'typing': {
-        await this.sendTypingAction(chatId);
+        // If text contains <think> tags, send/edit an actual message
+        const thinkMatch = msg.text.match(/<think>\n?([\s\S]*?)\n?<\/think>/);
+        if (thinkMatch) {
+          const thinkContent = thinkMatch[1].trim();
+          if (thinkContent) {
+            await this.sendOrEditThinkMessage(chatId, thinkContent);
+          }
+        } else {
+          // Plain typing indicator
+          await this.sendTypingAction(chatId);
+        }
         break;
       }
 
@@ -174,8 +187,9 @@ export class TelegramBotProvider implements ChannelProvider {
 
       case 'message':
       default: {
-        // Stop typing indicator for this chat
+        // Stop typing indicator and delete think message for this chat
         this.stopTypingTimer(chatId);
+        await this.deleteThinkMessage(chatId);
         await this.sendTextMessage(chatId, msg.text, msg.format);
         break;
       }
@@ -535,6 +549,62 @@ export class TelegramBotProvider implements ChannelProvider {
       }
     } catch (err) {
       this.log('error', 'sendTypingAction error:', err);
+    }
+  }
+
+  /** Send or edit a think message for live typing display */
+  private async sendOrEditThinkMessage(chatId: string, text: string): Promise<void> {
+    const existing = this.thinkMessages.get(chatId);
+
+    // Wrap in italic to visually distinguish from normal messages
+    const displayText = `\u{1F4AD} _${text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')}_`;
+
+    if (existing) {
+      // Edit existing think message
+      try {
+        await this.api.editMessageText(chatId, existing, displayText, {
+          parse_mode: 'MarkdownV2',
+        });
+      } catch {
+        // Edit might fail (e.g., content unchanged) — try sending new
+        try {
+          const sent = await this.api.sendMessage(chatId, displayText, {
+            parse_mode: 'MarkdownV2',
+            disable_notification: true,
+          });
+          this.thinkMessages.set(chatId, sent.message_id);
+        } catch (err) {
+          this.log('error', 'sendOrEditThinkMessage error:', err);
+        }
+      }
+    } else {
+      // Send new think message
+      try {
+        // Also keep typing action alive
+        await this.sendTypingAction(chatId);
+        const sent = await this.api.sendMessage(chatId, displayText, {
+          parse_mode: 'MarkdownV2',
+          disable_notification: true,
+        });
+        this.thinkMessages.set(chatId, sent.message_id);
+      } catch (err) {
+        this.log('error', 'sendThinkMessage error:', err);
+        // Fallback to typing action
+        await this.sendTypingAction(chatId);
+      }
+    }
+  }
+
+  /** Delete the think message when real reply arrives */
+  private async deleteThinkMessage(chatId: string): Promise<void> {
+    const msgId = this.thinkMessages.get(chatId);
+    if (msgId) {
+      this.thinkMessages.delete(chatId);
+      try {
+        await this.api.deleteMessage(chatId, msgId);
+      } catch {
+        // Best effort — message might already be deleted
+      }
     }
   }
 

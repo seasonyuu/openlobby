@@ -142,6 +142,7 @@ export class TelegramBotApi {
       reply_markup?: InlineKeyboardMarkup;
       reply_to_message_id?: number;
       disable_web_page_preview?: boolean;
+      disable_notification?: boolean;
     },
   ): Promise<TelegramMessage> {
     return this.call('sendMessage', {
@@ -209,6 +210,16 @@ export class TelegramBotApi {
 
   async deleteWebhook(): Promise<boolean> {
     return this.call('deleteWebhook');
+  }
+
+  async deleteMessage(
+    chatId: number | string,
+    messageId: number,
+  ): Promise<boolean> {
+    return this.call('deleteMessage', {
+      chat_id: chatId,
+      message_id: messageId,
+    });
   }
 
   // ─── Internal ──────────────────────────────────────────────────
