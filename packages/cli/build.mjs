@@ -36,6 +36,7 @@ await build({
   alias: {
     '@openlobby/core': join(rootDir, 'packages', 'core', 'src', 'index.ts'),
     '@openlobby/server': join(rootDir, 'packages', 'server', 'src', 'index.ts'),
+    'openlobby-channel-telegram': join(rootDir, 'packages', 'channel-telegram', 'src', 'index.ts'),
   },
 });
 

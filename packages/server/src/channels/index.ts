@@ -1,5 +1,6 @@
 import type { ChannelProvider, ChannelProviderConfig, ChannelPluginModule } from '@openlobby/core';
 import { WeComBotProvider } from './wecom.js';
+import { TelegramBotProvider } from 'openlobby-channel-telegram';
 
 /**
  * Create a channel provider from config.
@@ -10,6 +11,8 @@ export async function createProvider(config: ChannelProviderConfig): Promise<Cha
   switch (config.channelName) {
     case 'wecom':
       return new WeComBotProvider(config);
+    case 'telegram':
+      return new TelegramBotProvider(config);
   }
 
   // Dynamic plugin: try npm package conventions
