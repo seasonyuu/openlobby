@@ -71,7 +71,7 @@ interface LobbyState {
   sessions: Record<string, SessionSummaryData>;
   activeSessionId: string | null;
   messagesBySession: Record<string, LobbyMessageData[]>;
-  pendingControlBySession: Record<string, ControlRequestData | null>;
+  pendingControlBySession: Record<string, ControlRequestData[]>;
   typingBySession: Record<string, boolean>;
   connected: boolean;
   discoveredSessions: SessionSummaryData[];
@@ -97,6 +97,7 @@ interface LobbyState {
   addMessage: (sessionId: string, msg: LobbyMessageData) => void;
   setSessionHistory: (sessionId: string, messages: LobbyMessageData[]) => void;
   setPendingControl: (sessionId: string, request: ControlRequestData | null) => void;
+  removePendingControl: (sessionId: string, requestId: string) => void;
   setTyping: (sessionId: string, typing: boolean) => void;
   setSessions: (sessions: SessionSummaryData[]) => void;
   setDiscoveredSessions: (sessions: SessionSummaryData[]) => void;
@@ -266,17 +267,21 @@ export const useLobbyStore = create<LobbyState>((set) => ({
 
   setPendingControl: (sessionId, request) =>
     set((state) => {
+      const current = state.pendingControlBySession[sessionId] ?? [];
+      const updated = request
+        ? [...current, request]  // Append new control request
+        : [];                     // null clears all
       const session = state.sessions[sessionId];
       const updates: Partial<LobbyState> = {
         pendingControlBySession: {
           ...state.pendingControlBySession,
-          [sessionId]: request,
+          [sessionId]: updated,
         },
       };
 
       // Update session status for cross-session awareness
       if (session) {
-        const newStatus = request
+        const newStatus = updated.length > 0
           ? 'awaiting_approval'
           : session.status === 'awaiting_approval'
             ? 'running'
@@ -287,6 +292,28 @@ export const useLobbyStore = create<LobbyState>((set) => ({
             [sessionId]: { ...session, status: newStatus },
           };
         }
+      }
+
+      return updates;
+    }),
+
+  removePendingControl: (sessionId, requestId) =>
+    set((state) => {
+      const current = state.pendingControlBySession[sessionId] ?? [];
+      const updated = current.filter((c) => c.requestId !== requestId);
+      const session = state.sessions[sessionId];
+      const updates: Partial<LobbyState> = {
+        pendingControlBySession: {
+          ...state.pendingControlBySession,
+          [sessionId]: updated,
+        },
+      };
+
+      if (session && updated.length === 0 && session.status === 'awaiting_approval') {
+        updates.sessions = {
+          ...state.sessions,
+          [sessionId]: { ...session, status: 'running' },
+        };
       }
 
       return updates;

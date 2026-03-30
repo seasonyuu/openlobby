@@ -241,7 +241,7 @@ export function wsRespondControl(
   payload?: Record<string, unknown>,
 ): void {
   wsSend({ type: 'control.respond', sessionId, requestId, decision, payload });
-  useLobbyStore.getState().setPendingControl(sessionId, null);
+  useLobbyStore.getState().removePendingControl(sessionId, requestId);
 }
 
 export function wsDestroySession(sessionId: string): void {

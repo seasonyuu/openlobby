@@ -15,7 +15,7 @@ interface Props {
 
 export default function MessageList({ sessionId, onControlRespond, onChoiceSelect }: Props) {
   const messages = useLobbyStore((s) => s.messagesBySession[sessionId] ?? EMPTY_MESSAGES);
-  const pendingControl = useLobbyStore((s) => s.pendingControlBySession[sessionId] ?? null);
+  const pendingControls = useLobbyStore((s) => s.pendingControlBySession[sessionId] ?? []);
   const isTyping = useLobbyStore((s) => s.typingBySession[sessionId] ?? false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -65,7 +65,7 @@ export default function MessageList({ sessionId, onControlRespond, onChoiceSelec
     if (!userScrolledUp) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [isTyping, pendingControl, userScrolledUp]);
+  }, [isTyping, pendingControls, userScrolledUp]);
 
   const scrollToBottom = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -75,7 +75,7 @@ export default function MessageList({ sessionId, onControlRespond, onChoiceSelec
 
   return (
     <div className="flex-1 overflow-y-auto p-4 relative" ref={containerRef} onScroll={handleScroll}>
-      {messages.length === 0 && !pendingControl && !isTyping && (
+      {messages.length === 0 && pendingControls.length === 0 && !isTyping && (
         <div className="text-gray-500 text-center mt-20 text-sm">
           Send a message to start the conversation.
         </div>
@@ -85,24 +85,26 @@ export default function MessageList({ sessionId, onControlRespond, onChoiceSelec
         <MessageBubble key={msg.id} msg={msg} onChoiceSelect={onChoiceSelect} />
       ))}
 
-      {pendingControl && (
-        pendingControl.questions && pendingControl.questions.length > 0 ? (
+      {pendingControls.map((ctrl) => (
+        ctrl.questions && ctrl.questions.length > 0 ? (
           <QuestionCard
-            requestId={pendingControl.requestId}
-            questions={pendingControl.questions}
+            key={ctrl.requestId}
+            requestId={ctrl.requestId}
+            questions={ctrl.questions}
             onSubmit={(requestId, decision, payload) =>
               onControlRespond(sessionId, requestId, decision, payload)
             }
           />
         ) : (
           <ControlCard
-            request={pendingControl}
+            key={ctrl.requestId}
+            request={ctrl}
             onRespond={(requestId, decision) =>
               onControlRespond(sessionId, requestId, decision)
             }
           />
         )
-      )}
+      ))}
 
       {isTyping && <TypingIndicator />}
 
