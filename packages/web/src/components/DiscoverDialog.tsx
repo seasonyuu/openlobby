@@ -110,7 +110,7 @@ export default function DiscoverDialog({ onClose }: Props) {
                 </button>
                 {adapterNames.map((name) => {
                   const count = discoveredSessions.filter((s) => s.adapterName === name).length;
-                  const label = name === 'claude-code' ? 'CC' : name === 'codex-cli' ? 'CX' : name;
+                  const label = name === 'claude-code' ? 'CC' : name === 'codex-cli' ? 'CX' : name === 'opencode' ? 'OC' : name;
                   return (
                     <button
                       key={name}
@@ -211,7 +211,7 @@ function SessionRow({
   isSelected: boolean;
   onToggle: () => void;
 }) {
-  const adapterLabel = session.adapterName === 'claude-code' ? 'CC' : session.adapterName === 'codex-cli' ? 'CX' : session.adapterName;
+  const adapterLabel = session.adapterName === 'claude-code' ? 'CC' : session.adapterName === 'codex-cli' ? 'CX' : session.adapterName === 'opencode' ? 'OC' : session.adapterName;
 
   return (
     <label

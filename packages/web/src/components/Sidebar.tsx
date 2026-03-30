@@ -67,7 +67,7 @@ function SessionCard({
           </span>
         ) : (
           <span className="text-xs text-gray-500 uppercase">
-            {session.adapterName === 'claude-code' ? 'CC' : session.adapterName === 'codex-cli' ? 'CX' : session.adapterName}
+            {session.adapterName === 'claude-code' ? 'CC' : session.adapterName === 'codex-cli' ? 'CX' : session.adapterName === 'opencode' ? 'OC' : session.adapterName}
           </span>
         )}
       </div>

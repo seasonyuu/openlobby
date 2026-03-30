@@ -67,7 +67,7 @@ export default function RoomHeader() {
     setShowSettings(false);
   };
 
-  const adapterLabel = session.adapterName === 'claude-code' ? 'Claude Code' : session.adapterName;
+  const adapterLabel = session.adapterName === 'claude-code' ? 'Claude Code' : session.adapterName === 'codex-cli' ? 'Codex CLI' : session.adapterName === 'opencode' ? 'OpenCode' : session.adapterName;
 
   return (
     <div className="bg-gray-900 border-b border-gray-700 px-4 py-2 flex items-center justify-between relative">
