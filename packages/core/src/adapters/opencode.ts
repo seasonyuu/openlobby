@@ -379,6 +379,21 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
     console.log('[OpenCode] Plan mode:', enabled ? 'ON' : 'OFF');
   }
 
+  interrupt(): void {
+    if (this.status !== 'running' && this.status !== 'awaiting_approval') return;
+    console.log('[OpenCode] Interrupting current generation');
+    this.sseAbortController.abort();
+    this.sseAbortController = new AbortController();
+    this.client.session
+      .abort({ path: { id: this.sessionId } })
+      .catch(() => {});
+    this.status = 'idle';
+    this.emit('idle');
+    this.subscribeSSE().catch((err: unknown) => {
+      console.error('[OpenCode] Re-subscribe after interrupt failed:', err);
+    });
+  }
+
   kill(): void {
     console.log('[OpenCode] Killing process');
     this.sseAbortController.abort();
