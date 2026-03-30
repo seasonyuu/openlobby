@@ -158,6 +158,43 @@ export function handleWebSocket(
             break;
           }
 
+          // Handle /new in any session — rebuild CLI process
+          if (data.content.trim().toLowerCase() === '/new') {
+            try {
+              await sessionManager.rebuildSession(data.sessionId);
+            } catch (err) {
+              const replyMsg: LobbyMessage = {
+                id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                sessionId: data.sessionId,
+                timestamp: Date.now(),
+                type: 'system',
+                content: `⚠️ 重建 CLI 会话失败: ${err instanceof Error ? err.message : String(err)}`,
+              };
+              send({ type: 'message', sessionId: data.sessionId, message: replyMsg });
+            }
+            break;
+          }
+
+          // Handle /msg-* in any session — switch message mode
+          const msgModeMatch = data.content.trim().toLowerCase().match(/^\/msg-(only|tidy|total)$/);
+          if (msgModeMatch) {
+            const mode = `msg-${msgModeMatch[1]}` as import('@openlobby/core').MessageMode;
+            try {
+              sessionManager.configureSession(data.sessionId, { messageMode: mode } as any);
+              const replyMsg: LobbyMessage = {
+                id: `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                sessionId: data.sessionId,
+                timestamp: Date.now(),
+                type: 'system',
+                content: `✅ 消息模式已切换为 \`${mode}\``,
+              };
+              send({ type: 'message', sessionId: data.sessionId, message: replyMsg });
+            } catch (err) {
+              send({ type: 'error', sessionId: data.sessionId, error: String(err) });
+            }
+            break;
+          }
+
           channelRouter?.setMessageOrigin(data.sessionId, 'web');
           await sessionManager.sendMessage(data.sessionId, data.content);
           break;
@@ -339,6 +376,44 @@ export function handleWebSocket(
           if (channelRouter) {
             channelRouter.unbindSession(data.identityKey);
             send({ type: 'channel.bindings-list', bindings: channelRouter.listBindings() });
+          }
+          break;
+        }
+
+        case 'config.get': {
+          const { getServerConfig } = await import('./db.js');
+          const configDb = (sessionManager as any).db as import('better-sqlite3').Database | null;
+          if (configDb) {
+            const key = (data as any).key as string;
+            const value = getServerConfig(configDb, key) ?? '';
+            send({ type: 'config.value', key, value } as any);
+          }
+          break;
+        }
+
+        case 'config.set': {
+          const { setServerConfig } = await import('./db.js');
+          const configDb2 = (sessionManager as any).db as import('better-sqlite3').Database | null;
+          const cfgKey = (data as any).key as string;
+          const cfgValue = (data as any).value as string;
+
+          if (configDb2) {
+            setServerConfig(configDb2, cfgKey, cfgValue);
+            send({ type: 'config.value', key: cfgKey, value: cfgValue } as any);
+
+            // Special handling: if defaultAdapter changed, rebuild LobbyManager
+            if (cfgKey === 'defaultAdapter' && lobbyManager) {
+              try {
+                await lobbyManager.rebuild(cfgValue);
+                send({
+                  type: 'lm.status',
+                  available: lobbyManager.isAvailable(),
+                  sessionId: lobbyManager.getSessionId() ?? undefined,
+                });
+              } catch (err) {
+                send({ type: 'error', error: `LM rebuild failed: ${err instanceof Error ? err.message : String(err)}` });
+              }
+            }
           }
           break;
         }
