@@ -101,20 +101,27 @@ codex --version
 ## 快速开始
 
 ```bash
-npx openlobby
+# 全局安装
+npm install -g openlobby
+
+# 启动
+openlobby
 ```
 
 启动 OpenLobby 服务，端口 3001，Web 界面访问 `http://localhost:3001`。
 
 ```bash
+# 或直接运行（无需安装）
+npx openlobby
+
 # 自定义端口
-npx openlobby --port 8080
+openlobby --port 8080
 
 # 自定义 MCP 内部 API 端口（默认：服务端口 + 1）
-npx openlobby --mcp-port 4002
+openlobby --mcp-port 4002
 
 # 或通过环境变量设置
-OPENLOBBY_MCP_PORT=4002 npx openlobby
+OPENLOBBY_MCP_PORT=4002 openlobby
 ```
 
 ## 使用场景
@@ -226,6 +233,45 @@ pnpm test
 5. 提交 Pull Request
 
 请遵循现有代码规范：ESM 导入、严格 TypeScript、接口优先设计。
+
+## 常见问题
+
+### `npx openlobby` 报错 "could not determine executable to run"
+
+这是 npm/npx 的偶发缓存问题，重新运行即可。或改用全局安装：
+
+```bash
+npm install -g openlobby
+openlobby
+```
+
+### 启动后 Web 界面空白
+
+确认浏览器访问的是正确的地址（默认 `http://localhost:3001`）。如果使用了 `--port`，请访问对应端口。
+
+### 大厅经理显示不可用
+
+需要至少安装一个 AI CLI 工具（Claude Code 或 Codex CLI）。检查 `claude --version` 或 `codex --version` 是否正常输出。
+
+### 企业微信 / Telegram 通道添加后显示不健康
+
+- **企业微信：** 确认 Bot ID 和 Secret 正确，且企业微信后台已启用 AI 机器人
+- **Telegram：** 确认 Bot Token 正确（从 @BotFather 获取），长轮询模式无需外网 URL
+
+### 会话卡在 "thinking" 状态
+
+尝试在会话头部点击恢复按钮，或使用 `/exit` 返回大厅经理后重新进入。
+
+### 如何在服务器上后台运行？
+
+```bash
+# 使用 pm2
+npm install -g pm2
+pm2 start openlobby -- --port 3001
+
+# 或使用 nohup
+nohup openlobby --port 3001 &
+```
 
 ## 许可证
 

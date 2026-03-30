@@ -101,20 +101,27 @@ codex --version
 ## Quick Start
 
 ```bash
-npx openlobby
+# Install globally
+npm install -g openlobby
+
+# Start
+openlobby
 ```
 
 This starts the OpenLobby server on port 3001 and opens the web UI at `http://localhost:3001`.
 
 ```bash
+# Or run directly without installing
+npx openlobby
+
 # Custom port
-npx openlobby --port 8080
+openlobby --port 8080
 
 # Custom MCP internal API port (default: server port + 1)
-npx openlobby --mcp-port 4002
+openlobby --mcp-port 4002
 
 # Or via environment variable
-OPENLOBBY_MCP_PORT=4002 npx openlobby
+OPENLOBBY_MCP_PORT=4002 openlobby
 ```
 
 ## Usage Scenarios
@@ -226,6 +233,45 @@ pnpm test
 5. Submit a pull request
 
 Please follow the existing code conventions: ESM imports, strict TypeScript, interface-first design.
+
+## FAQ
+
+### `npx openlobby` 报错 "could not determine executable to run"
+
+这是 npm/npx 的偶发缓存问题，重新运行即可。或改用全局安装：
+
+```bash
+npm install -g openlobby
+openlobby
+```
+
+### 启动后 Web 界面空白
+
+确认浏览器访问的是正确的地址（默认 `http://localhost:3001`）。如果使用了 `--port`，请访问对应端口。
+
+### Lobby Manager 显示不可用
+
+需要至少安装一个 AI CLI 工具（Claude Code 或 Codex CLI）。检查 `claude --version` 或 `codex --version` 是否正常输出。
+
+### WeCom / Telegram 通道添加后显示不健康
+
+- **WeCom：** 确认 Bot ID 和 Secret 正确，且企业微信后台已启用 AI 机器人
+- **Telegram：** 确认 Bot Token 正确（从 @BotFather 获取），长轮询模式无需外网 URL
+
+### 会话卡在 "thinking" 状态
+
+尝试在会话头部点击恢复按钮，或使用 `/exit` 返回 Lobby Manager 后重新进入。
+
+### 如何在服务器上后台运行？
+
+```bash
+# 使用 pm2
+npm install -g pm2
+pm2 start openlobby -- --port 3001
+
+# 或使用 nohup
+nohup openlobby --port 3001 &
+```
 
 ## License
 
