@@ -61,6 +61,12 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
   private seenTextParts = new Set<string>();
   /** Track seen ToolPart IDs to avoid duplicate tool_use emissions */
   private emittedToolUseIds = new Set<string>();
+  /**
+   * Track user message IDs (from message.updated events).
+   * Used to skip message.part.updated events that belong to user messages —
+   * without this, user text parts would be emitted as 'assistant' messages.
+   */
+  private userMessageIds = new Set<string>();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   constructor(sessionId: string, options: SpawnOptions, client: any) {
@@ -152,6 +158,11 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
 
     if (!part) return;
 
+    // Skip parts belonging to user messages.
+    // TextPart.messageID links each part to its parent Message.
+    // If the parent is a user message, we must not emit it as 'assistant'.
+    if (part.messageID && this.userMessageIds.has(part.messageID)) return;
+
     switch (part.type) {
       case 'text': {
         if (delta) {
@@ -216,7 +227,17 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handleMessageUpdated(props: any): void {
     const info = props.info;
-    if (!info || info.role !== 'assistant') return;
+    if (!info) return;
+
+    // Track user message IDs so we can filter out their parts in handlePartUpdated.
+    // Without this, message.part.updated for user text parts would be emitted
+    // as 'assistant' messages, causing user input to appear twice in the UI.
+    if (info.role === 'user') {
+      this.userMessageIds.add(info.id);
+      return;
+    }
+
+    if (info.role !== 'assistant') return;
 
     // Only emit result when the message is completed (has time.completed)
     if (!info.time?.completed) return;
