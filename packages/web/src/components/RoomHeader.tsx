@@ -32,6 +32,7 @@ export default function RoomHeader() {
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [model, setModel] = useState('');
   const [permissionMode, setPermissionMode] = useState('');
+  const [messageMode, setMessageMode] = useState('');
 
   if (!activeSessionId || !session) return null;
 
@@ -55,6 +56,7 @@ export default function RoomHeader() {
     const opts: Record<string, unknown> = {};
     if (model.trim()) opts.model = model.trim();
     if (permissionMode) opts.permissionMode = permissionMode;
+    if (messageMode) opts.messageMode = messageMode;
     if (Object.keys(opts).length > 0) {
       wsConfigureSession(activeSessionId, opts);
       // Optimistically update local store so Settings reflects new values immediately
@@ -62,6 +64,7 @@ export default function RoomHeader() {
         ...session,
         ...(model.trim() ? { model: model.trim() } : {}),
         ...(permissionMode ? { permissionMode } : {}),
+        ...(messageMode ? { messageMode } : {}),
       });
     }
     setShowSettings(false);
@@ -113,6 +116,7 @@ export default function RoomHeader() {
             setShowSettings(!showSettings);
             setModel(session.model ?? '');
             setPermissionMode(session.permissionMode ?? '');
+            setMessageMode(session.messageMode ?? 'msg-tidy');
           }}
           className={`text-xs px-2 py-1 rounded transition-colors ${
             showSettings ? 'bg-gray-700 text-gray-200' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800'
@@ -151,6 +155,18 @@ export default function RoomHeader() {
                   <option value="default">Default</option>
                   <option value="plan">Plan (Read-only)</option>
                   <option value="bypassPermissions">Full Auto</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-1">Message Mode</label>
+                <select
+                  value={messageMode}
+                  onChange={(e) => setMessageMode(e.target.value)}
+                  className="w-full bg-gray-800 text-gray-100 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="msg-tidy">Tidy (collapse tools)</option>
+                  <option value="msg-only">Messages only</option>
+                  <option value="msg-total">All messages</option>
                 </select>
               </div>
               <button
