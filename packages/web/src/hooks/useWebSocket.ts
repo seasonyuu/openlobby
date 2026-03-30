@@ -50,6 +50,8 @@ function ensureConnection(url: string) {
     console.log('[WS] Connected');
     useLobbyStore.getState().setConnected(true);
     wsSend({ type: 'session.list' });
+    wsSend({ type: 'config.get', key: 'defaultAdapter' });
+    wsSend({ type: 'config.get', key: 'defaultMessageMode' });
   };
 
   ws.onclose = () => {
@@ -119,14 +121,56 @@ function ensureConnection(url: string) {
         break;
       case 'message':
         if (data.sessionId && data.message) {
-          state.addMessage(data.sessionId, data.message);
           const msgType = data.message.type;
-          // Stop typing on result message
+          const msgSession = state.sessions[data.sessionId];
+          const messageMode = msgSession?.messageMode ?? 'msg-total';
+
+          // msg-only: filter out tool_use/tool_result on client side too
+          if (messageMode === 'msg-only' && (msgType === 'tool_use' || msgType === 'tool_result')) {
+            break;
+          }
+
+          // msg-tidy: aggregate tool calls instead of showing individually
+          if (messageMode === 'msg-tidy' && (msgType === 'tool_use' || msgType === 'tool_result')) {
+            if (msgType === 'tool_use') {
+              const toolName = (data.message.meta as any)?.toolName ?? 'unknown';
+              const content = typeof data.message.content === 'string'
+                ? data.message.content
+                : JSON.stringify(data.message.content);
+              state.updateToolAggregator(data.sessionId, (agg) => ({
+                isAggregating: true,
+                toolCounts: { ...agg.toolCounts, [toolName]: (agg.toolCounts[toolName] ?? 0) + 1 },
+                lastToolName: toolName,
+                lastToolContent: content.slice(0, 200),
+                totalCalls: agg.totalCalls + 1,
+              }));
+            }
+            state.setTyping(data.sessionId, true);
+            break;
+          }
+
+          // msg-tidy: finalize aggregator on assistant/result
+          if (messageMode === 'msg-tidy' && (msgType === 'assistant' || msgType === 'result')) {
+            const agg = state.toolAggregatorBySession[data.sessionId];
+            if (agg && agg.totalCalls > 0) {
+              const statsList = Object.entries(agg.toolCounts)
+                .map(([name, count]) => `${name}(${count})`)
+                .join(', ');
+              state.addMessage(data.sessionId, {
+                id: `tool-summary-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                sessionId: data.sessionId,
+                timestamp: Date.now(),
+                type: 'tool_summary',
+                content: `\u{1F527} 已完成 ${agg.totalCalls} 次工具调用: ${statsList}`,
+              });
+              state.resetToolAggregator(data.sessionId);
+            }
+          }
+
+          state.addMessage(data.sessionId, data.message);
           if (msgType === 'result') {
             state.setTyping(data.sessionId, false);
           }
-          // Start/continue typing on stream_delta, tool_use, tool_result
-          // These indicate the assistant is actively working
           if (msgType === 'stream_delta' || msgType === 'tool_use' || msgType === 'tool_result') {
             state.setTyping(data.sessionId, true);
           }
@@ -189,6 +233,12 @@ function ensureConnection(url: string) {
       case 'completion.response':
         if (data.sessionId && data.commands) {
           state.setSessionCommands(data.sessionId, data.commands, data.cached);
+        }
+        break;
+
+      case 'config.value':
+        if ((data as any).key && (data as any).value !== undefined) {
+          state.setServerConfigValue((data as any).key, (data as any).value);
         }
         break;
 
@@ -327,6 +377,14 @@ export function wsUnbind(identityKey: string): void {
 
 export function wsRequestCompletions(sessionId: string): void {
   wsSend({ type: 'completion.request', sessionId });
+}
+
+export function wsGetConfig(key: string): void {
+  wsSend({ type: 'config.get', key });
+}
+
+export function wsSetConfig(key: string, value: string): void {
+  wsSend({ type: 'config.set', key, value });
 }
 
 // ---- Hook: call once in App to boot the connection ----

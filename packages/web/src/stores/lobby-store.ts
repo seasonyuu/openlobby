@@ -14,6 +14,7 @@ export interface SessionSummaryData {
   origin: string;
   resumeCommand: string;
   jsonlPath?: string;
+  messageMode?: string;
   planMode?: boolean;
   channelBinding?: {
     channelName: string;
@@ -67,6 +68,14 @@ export interface ControlRequestData {
   questions?: ControlQuestionData[];
 }
 
+export interface ToolCallAggregator {
+  isAggregating: boolean;
+  toolCounts: Record<string, number>;
+  lastToolName: string;
+  lastToolContent: string;
+  totalCalls: number;
+}
+
 interface LobbyState {
   sessions: Record<string, SessionSummaryData>;
   activeSessionId: string | null;
@@ -88,6 +97,15 @@ interface LobbyState {
   commandsBySession: Record<string, Array<{ name: string; description: string; args?: string }>>;
   commandsLoadingBySession: Record<string, boolean>;
   setSessionCommands: (sessionId: string, commands: Array<{ name: string; description: string; args?: string }>, cached?: boolean) => void;
+
+  // Tool call aggregation for msg-tidy mode
+  toolAggregatorBySession: Record<string, ToolCallAggregator>;
+  // Server config cache
+  serverConfig: Record<string, string>;
+
+  updateToolAggregator: (sessionId: string, updater: (agg: ToolCallAggregator) => ToolCallAggregator) => void;
+  resetToolAggregator: (sessionId: string) => void;
+  setServerConfigValue: (key: string, value: string) => void;
 
   setConnected: (connected: boolean) => void;
   addSession: (session: SessionSummaryData) => void;
@@ -140,6 +158,37 @@ export const useLobbyStore = create<LobbyState>((set) => ({
 
   commandsBySession: {},
   commandsLoadingBySession: {},
+
+  toolAggregatorBySession: {},
+  serverConfig: {},
+
+  updateToolAggregator: (sessionId, updater) =>
+    set((state) => {
+      const current = state.toolAggregatorBySession[sessionId] ?? {
+        isAggregating: false,
+        toolCounts: {},
+        lastToolName: '',
+        lastToolContent: '',
+        totalCalls: 0,
+      };
+      return {
+        toolAggregatorBySession: {
+          ...state.toolAggregatorBySession,
+          [sessionId]: updater(current),
+        },
+      };
+    }),
+
+  resetToolAggregator: (sessionId) =>
+    set((state) => {
+      const { [sessionId]: _, ...rest } = state.toolAggregatorBySession;
+      return { toolAggregatorBySession: rest };
+    }),
+
+  setServerConfigValue: (key, value) =>
+    set((state) => ({
+      serverConfig: { ...state.serverConfig, [key]: value },
+    })),
 
   setConnected: (connected) => set({ connected }),
 
