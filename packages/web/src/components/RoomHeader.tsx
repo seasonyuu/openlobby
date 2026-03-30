@@ -57,6 +57,12 @@ export default function RoomHeader() {
     if (permissionMode) opts.permissionMode = permissionMode;
     if (Object.keys(opts).length > 0) {
       wsConfigureSession(activeSessionId, opts);
+      // Optimistically update local store so Settings reflects new values immediately
+      useLobbyStore.getState().updateSession({
+        ...session,
+        ...(model.trim() ? { model: model.trim() } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
+      });
     }
     setShowSettings(false);
   };
