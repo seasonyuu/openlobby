@@ -15,7 +15,6 @@ export interface SessionSummaryData {
   resumeCommand: string;
   jsonlPath?: string;
   messageMode?: string;
-  planMode?: boolean;
   channelBinding?: {
     channelName: string;
     peerId: string;
@@ -128,6 +127,13 @@ interface LobbyState {
   // Channel actions
   setChannelProviders: (providers: ChannelProviderData[]) => void;
   setChannelBindings: (bindings: ChannelBindingData[]) => void;
+
+  // Adapter permission metadata
+  adapterPermissionMeta: Record<string, { displayName: string; modeLabels: Record<string, string> }>;
+  adapterDefaults: Array<{ adapterName: string; permissionMode: string; displayName: string }>;
+
+  setAdapterPermissionMeta: (meta: Record<string, { displayName: string; modeLabels: Record<string, string> }>) => void;
+  setAdapterDefaults: (defaults: Array<{ adapterName: string; permissionMode: string; displayName: string }>) => void;
 }
 
 // Track seen message IDs per session for deduplication
@@ -398,6 +404,12 @@ export const useLobbyStore = create<LobbyState>((set) => ({
   // Channel actions
   setChannelProviders: (providers) => set({ channelProviders: providers }),
   setChannelBindings: (bindings) => set({ channelBindings: bindings }),
+
+  adapterPermissionMeta: {},
+  adapterDefaults: [],
+
+  setAdapterPermissionMeta: (meta) => set({ adapterPermissionMeta: meta }),
+  setAdapterDefaults: (defaults) => set({ adapterDefaults: defaults }),
 
   setSessionCommands: (sessionId, commands, cached) =>
     set((state) => ({

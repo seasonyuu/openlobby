@@ -242,6 +242,18 @@ function ensureConnection(url: string) {
         }
         break;
 
+      case 'adapter.meta': {
+        const { meta } = data as unknown as { meta: Record<string, { displayName: string; modeLabels: Record<string, string> }> };
+        state.setAdapterPermissionMeta(meta);
+        break;
+      }
+
+      case 'adapter.defaults': {
+        const { defaults } = data as unknown as { defaults: Array<{ adapterName: string; permissionMode: string; displayName: string }> };
+        state.setAdapterDefaults(defaults);
+        break;
+      }
+
       case 'error':
         console.error('[WS] Server error:', data.error);
         break;
@@ -385,6 +397,18 @@ export function wsGetConfig(key: string): void {
 
 export function wsSetConfig(key: string, value: string): void {
   wsSend({ type: 'config.set', key, value });
+}
+
+export function wsGetAdapterDefaults(): void {
+  wsSend({ type: 'adapter.get-defaults' });
+}
+
+export function wsSetAdapterDefault(adapterName: string, permissionMode: string): void {
+  wsSend({ type: 'adapter.set-default', adapterName, permissionMode });
+}
+
+export function wsGetAdapterMeta(): void {
+  wsSend({ type: 'adapter.get-meta' });
 }
 
 // ---- Hook: call once in App to boot the connection ----
