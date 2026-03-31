@@ -136,9 +136,12 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
         break;
 
       case 'session.idle':
-        console.log('[OpenCode] Session idle:', this.sessionId);
-        this.status = 'idle';
-        this.emit('idle');
+        // Don't override awaiting_approval — idle event arrives even during permission prompts
+        if (this.status !== 'awaiting_approval') {
+          console.log('[OpenCode] Session idle:', this.sessionId);
+          this.status = 'idle';
+          this.emit('idle');
+        }
         break;
 
       case 'session.error':
@@ -318,7 +321,10 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
     if (statusType === 'busy') {
       this.status = 'running';
     } else if (statusType === 'idle') {
-      this.status = 'idle';
+      // Don't override awaiting_approval — status events arrive even during permission prompts
+      if (this.status !== 'awaiting_approval') {
+        this.status = 'idle';
+      }
     }
     // 'retry' status — keep current status
   }
