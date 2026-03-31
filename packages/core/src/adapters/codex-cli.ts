@@ -15,6 +15,7 @@ import type {
   SessionSummary,
   ControlDecision,
   AdapterCommand,
+  AdapterPermissionMeta,
 } from '../types.js';
 
 // ──────────────────────────────────────────────
@@ -110,7 +111,6 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
   private lineBuffer = '';
   private spawnOptions: SpawnOptions;
   private injectedMcpServers: string[] = [];
-  private planMode = false;
   private originalInstructions: string | undefined;
   /** Set to true when kill() is called intentionally, so exit handler respects it */
   private killedIntentionally = false;
@@ -347,30 +347,6 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
     pending.resolve();
   }
 
-  setPlanMode(enabled: boolean): void {
-    this.planMode = enabled;
-    console.log('[Codex] Plan mode:', enabled ? 'ON' : 'OFF');
-
-    // Inject/restore developer instructions via JSON-RPC
-    if (enabled) {
-      this.originalInstructions = this.spawnOptions.systemPrompt;
-      const planInstructions = this.originalInstructions
-        ? `${this.originalInstructions}\n\n${CODEX_PLAN_MODE_PROMPT}`
-        : CODEX_PLAN_MODE_PROMPT;
-      this.sendRpc('config/value/write', {
-        keyPath: 'developer_instructions',
-        value: planInstructions,
-        mergeStrategy: 'replace',
-      }).catch((err: unknown) => console.warn('[Codex] Failed to set plan mode instructions:', err));
-    } else {
-      this.sendRpc('config/value/write', {
-        keyPath: 'developer_instructions',
-        value: this.originalInstructions ?? '',
-        mergeStrategy: 'replace',
-      }).catch((err: unknown) => console.warn('[Codex] Failed to restore instructions:', err));
-    }
-  }
-
   updateOptions(opts: Partial<SpawnOptions>): void {
     Object.assign(this.spawnOptions, opts);
     console.log('[Codex] Options updated:', Object.keys(opts));
@@ -505,7 +481,7 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
       const meta = params._meta ?? {};
       const approvalKind = String(meta.codex_approval_kind ?? '');
       // In plan mode, deny write-like MCP operations
-      if (this.planMode && (approvalKind.includes('write') || approvalKind.includes('edit') || approvalKind.includes('create') || approvalKind.includes('delete'))) {
+      if (this.spawnOptions.permissionMode === 'readonly' && (approvalKind.includes('write') || approvalKind.includes('edit') || approvalKind.includes('create') || approvalKind.includes('delete'))) {
         console.log('[Codex] Plan mode: denying MCP elicitation:', approvalKind);
         this.writeRaw({
           jsonrpc: '2.0',
@@ -534,7 +510,6 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
       console.log('[Codex] Approval requested:', toolName);
 
-      // Emit tool_use so the UI shows what tool is being called (real-time)
       this.emit('message', makeLobbyMessage(
         this.sessionId,
         'tool_use',
@@ -542,24 +517,43 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
         { toolName: typeof toolName === 'string' ? toolName : String(toolName) },
       ));
 
-      // In plan mode, auto-deny all file changes and command executions
-      if (this.planMode) {
-        console.log('[Codex] Plan mode: auto-denying', toolName);
+      const mode = this.spawnOptions.permissionMode ?? 'supervised';
+
+      // Auto mode: approve immediately
+      if (mode === 'auto') {
+        console.log('[Codex] Auto mode: approved', toolName);
         this.writeRaw({
           jsonrpc: '2.0',
           id: msg.id,
-          result: { decision: 'decline' },
+          result: { decision: 'accept' },
         });
-        // Emit tool_result so the UI shows the denial clearly
         this.emit('message', makeLobbyMessage(
           this.sessionId,
           'tool_result',
-          `[Plan mode] Denied: ${toolName}`,
+          `[Auto] Approved: ${toolName}`,
           { toolName: typeof toolName === 'string' ? toolName : String(toolName) },
         ));
         return;
       }
 
+      // Readonly mode: auto-deny
+      if (mode === 'readonly') {
+        console.log('[Codex] Readonly mode: auto-denying', toolName);
+        this.writeRaw({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: { decision: 'decline' },
+        });
+        this.emit('message', makeLobbyMessage(
+          this.sessionId,
+          'tool_result',
+          `[Readonly mode] Denied: ${toolName}`,
+          { toolName: typeof toolName === 'string' ? toolName : String(toolName) },
+        ));
+        return;
+      }
+
+      // Supervised mode: emit control and wait for user
       this.status = 'awaiting_approval';
       this.emit('message', makeLobbyMessage(this.sessionId, 'control', {
         requestId,
@@ -842,8 +836,10 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 
   private mapPermissionMode(mode?: string): string {
     switch (mode) {
+      case 'auto': return 'never';
       case 'bypassPermissions': return 'never';
       case 'dontAsk': return 'never';
+      case 'readonly': return 'on-request';
       case 'plan': return 'on-request';
       default: return 'on-request';
     }
@@ -857,6 +853,13 @@ class CodexCliProcess extends EventEmitter implements AgentProcess {
 export class CodexCliAdapter implements AgentAdapter {
   readonly name = 'codex-cli';
   readonly displayName = 'Codex CLI';
+  readonly permissionMeta: AdapterPermissionMeta = {
+    modeLabels: {
+      auto: 'never',
+      supervised: 'on-request',
+      readonly: 'on-request + plan',
+    },
+  };
 
   async detect(): Promise<{ installed: boolean; version?: string; path?: string }> {
     try {
