@@ -13,6 +13,7 @@ import type {
   SessionSummary,
   ControlDecision,
   AdapterCommand,
+  AdapterPermissionMeta,
 } from '../types.js';
 
 // ──────────────────────────────────────────────
@@ -53,7 +54,6 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
   status: AgentProcess['status'] = 'idle';
 
   private spawnOptions: SpawnOptions;
-  private planMode = false;
   private sseAbortController = new AbortController();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private client: any;
@@ -267,14 +267,46 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
   private handlePermissionUpdated(props: any): void {
     if (!props.id) return;
 
-    console.log('[OpenCode] Permission requested:', props.title, 'id:', props.id);
-    this.status = 'awaiting_approval';
+    const mode = this.spawnOptions.permissionMode ?? 'supervised';
+    const toolName = props.title ?? props.type ?? 'unknown';
 
+    console.log('[OpenCode] Permission requested:', toolName, 'id:', props.id, 'mode:', mode);
+
+    // Auto mode: immediately approve
+    if (mode === 'auto') {
+      console.log('[OpenCode] Auto mode: approved', toolName);
+      this.client
+        .postSessionIdPermissionsPermissionId({
+          path: { id: this.sessionId, permissionID: props.id },
+          body: { response: 'once' },
+        })
+        .catch((err: unknown) => {
+          console.warn('[OpenCode] Auto-approve failed:', err);
+        });
+      return;
+    }
+
+    // Readonly mode: auto-reject
+    if (mode === 'readonly') {
+      console.log('[OpenCode] Readonly mode: rejected', toolName);
+      this.client
+        .postSessionIdPermissionsPermissionId({
+          path: { id: this.sessionId, permissionID: props.id },
+          body: { response: 'reject' },
+        })
+        .catch((err: unknown) => {
+          console.warn('[OpenCode] Auto-reject failed:', err);
+        });
+      return;
+    }
+
+    // Supervised mode: emit control message for user approval
+    this.status = 'awaiting_approval';
     this.emit(
       'message',
       makeLobbyMessage(this.sessionId, 'control', {
         requestId: props.id,
-        toolName: props.title ?? props.type ?? 'unknown',
+        toolName,
         toolInput: props.metadata ?? {},
       }),
     );
@@ -324,7 +356,7 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
       parts: [{ type: 'text' as const, text: content }],
     };
 
-    if (this.planMode) {
+    if (this.spawnOptions.permissionMode === 'readonly') {
       body.system = PLAN_MODE_SYSTEM_PROMPT;
     }
 
@@ -374,11 +406,6 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
     console.log('[OpenCode] Options updated:', Object.keys(opts));
   }
 
-  setPlanMode(enabled: boolean): void {
-    this.planMode = enabled;
-    console.log('[OpenCode] Plan mode:', enabled ? 'ON' : 'OFF');
-  }
-
   interrupt(): void {
     if (this.status !== 'running' && this.status !== 'awaiting_approval') return;
     console.log('[OpenCode] Interrupting current generation');
@@ -415,6 +442,13 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
 export class OpenCodeAdapter implements AgentAdapter {
   readonly name = 'opencode';
   readonly displayName = 'OpenCode';
+  readonly permissionMeta: AdapterPermissionMeta = {
+    modeLabels: {
+      auto: 'auto-approve',
+      supervised: 'prompt',
+      readonly: 'plan + auto-reject',
+    },
+  };
 
   private serverInstance: { url: string; close(): void } | null = null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
