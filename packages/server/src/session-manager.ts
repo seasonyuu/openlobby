@@ -7,6 +7,7 @@ import type {
   ControlDecision,
   AdapterCommand,
   MessageMode,
+  PermissionMode,
 } from '@openlobby/core';
 import type Database from 'better-sqlite3';
 import {
@@ -18,6 +19,9 @@ import {
   getSessionCommands,
   upsertSessionCommands,
   getServerConfig,
+  getAdapterDefault,
+  getAllAdapterDefaults,
+  setAdapterDefault,
 } from './db.js';
 
 export interface ManagedSession {
@@ -31,10 +35,9 @@ export interface ManagedSession {
   process: AgentProcess;
   messageCount: number;
   model?: string;
-  permissionMode?: string;
+  permissionMode?: PermissionMode;
   lastMessage?: string;
   origin: 'lobby' | 'cli' | 'lobby-manager';
-  planMode: boolean;
   messageMode: MessageMode;
 }
 
@@ -55,8 +58,6 @@ export class SessionManager {
     (sessionId: string, commands: AdapterCommand[]) => void
   >();
   private db: Database.Database | null;
-  /** Track planMode for sessions not yet in memory (set before lazy resume) */
-  private pendingPlanMode = new Map<string, boolean>();
   /** In-memory message cache as fallback when adapter can't read history from disk */
   private messageCache = new Map<string, LobbyMessage[]>();
   /** Track which sessions are being viewed on web (sessionId → set of listener IDs) */
@@ -165,9 +166,6 @@ export class SessionManager {
   }
 
   private toSummary(s: ManagedSession): SessionSummary {
-    const permMode = s.permissionMode ??
-      (s.process as unknown as { spawnOptions?: { permissionMode?: string } })
-        ?.spawnOptions?.permissionMode;
     return {
       id: s.id,
       adapterName: s.adapterName,
@@ -177,10 +175,9 @@ export class SessionManager {
       lastMessage: s.lastMessage,
       messageCount: s.messageCount,
       model: s.model,
-      permissionMode: permMode,
+      permissionMode: s.permissionMode ?? undefined,
       cwd: s.cwd,
       origin: s.origin,
-      planMode: s.planMode,
       messageMode: s.messageMode,
       resumeCommand: this.buildResumeCommand(s),
     };
@@ -191,14 +188,38 @@ export class SessionManager {
     const adapter = this.adapters.get(s.adapterName);
     let cmd = adapter ? adapter.getResumeCommand(s.id) : `claude --resume ${s.id}`;
     if (s.model) cmd += ` --model ${s.model}`;
-    // Check process spawnOptions for permissionMode
-    const permMode = (s.process as unknown as { spawnOptions?: { permissionMode?: string } })
-      ?.spawnOptions?.permissionMode;
-    if (permMode && permMode !== 'default') {
-      cmd += ` --permission-mode ${permMode}`;
+    const effectiveMode = this.resolvePermissionMode(s);
+    if (effectiveMode !== 'supervised') {
+      const nativeLabel = adapter?.permissionMeta.modeLabels[effectiveMode];
+      if (nativeLabel) {
+        cmd += ` --permission-mode ${nativeLabel}`;
+      }
     }
     parts.push(cmd);
     return parts.join(' && ');
+  }
+
+  resolvePermissionMode(session: ManagedSession): PermissionMode;
+  resolvePermissionMode(adapterName: string, sessionPermission?: PermissionMode | null): PermissionMode;
+  resolvePermissionMode(
+    sessionOrAdapterName: ManagedSession | string,
+    sessionPermission?: PermissionMode | null,
+  ): PermissionMode {
+    if (typeof sessionOrAdapterName === 'string') {
+      if (sessionPermission) return sessionPermission;
+      if (this.db) {
+        const row = getAdapterDefault(this.db, sessionOrAdapterName);
+        if (row) return row.permission_mode as PermissionMode;
+      }
+      return 'supervised';
+    }
+    const session = sessionOrAdapterName;
+    if (session.permissionMode) return session.permissionMode;
+    if (this.db) {
+      const row = getAdapterDefault(this.db, session.adapterName);
+      if (row) return row.permission_mode as PermissionMode;
+    }
+    return 'supervised';
   }
 
   /**
@@ -329,7 +350,9 @@ export class SessionManager {
       throw new Error(`Adapter "${adapterName}" not found`);
     }
 
-    const process = await adapter.spawn(options);
+    const effectivePermission = this.resolvePermissionMode(adapterName, options.permissionMode);
+    const spawnOptions = { ...options, permissionMode: effectivePermission };
+    const process = await adapter.spawn(spawnOptions);
 
     const session: ManagedSession = {
       id: process.sessionId,
@@ -344,7 +367,6 @@ export class SessionManager {
       model: options.model,
       permissionMode: options.permissionMode,
       origin,
-      planMode: false,
       messageMode: (options as any).messageMode ?? (this.db ? (getServerConfig(this.db, 'defaultMessageMode') as MessageMode | undefined) : undefined) ?? 'msg-tidy',
     };
 
@@ -383,7 +405,6 @@ export class SessionManager {
       model: options.model,
       permissionMode: options.permissionMode,
       origin,
-      planMode: false,
       messageMode: (options as any).messageMode ?? 'msg-tidy',
     };
     this.wireProcessEvents(session);
@@ -405,27 +426,6 @@ export class SessionManager {
     if (options.messageMode) session.messageMode = options.messageMode;
     this.persistSession(session);
     this.broadcastSessionUpdate(session);
-  }
-
-  setPlanMode(sessionId: string, enabled: boolean): void {
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      // Live session in memory — toggle on process too
-      session.planMode = enabled;
-      session.process.setPlanMode?.(enabled);
-      this.broadcastSessionUpdate(session);
-      return;
-    }
-
-    // Session not in memory (idle/stopped in SQLite) — store pending state and
-    // broadcast to frontend. When lazily resumed, the pending state is applied.
-    const summary = this.getSessionInfo(sessionId);
-    if (!summary) throw new Error(`Session "${sessionId}" not found`);
-    this.pendingPlanMode.set(sessionId, enabled);
-    summary.planMode = enabled;
-    for (const handler of this.sessionUpdateListeners.values()) {
-      handler(summary);
-    }
   }
 
   async sendMessage(sessionId: string, content: string): Promise<void> {
@@ -469,11 +469,12 @@ export class SessionManager {
     if (!adapter) return null;
 
     console.log(`[SessionManager] Lazy-resuming session ${sessionId}`);
-    const resumePermMode = row.permission_mode ?? undefined;
+    const sessionPermission = (row.permission_mode as PermissionMode | null) ?? undefined;
+    const effectivePermission = this.resolvePermissionMode(row.adapter_name, sessionPermission);
     const process = await adapter.resume(sessionId, {
       prompt,
       cwd: row.cwd,
-      permissionMode: resumePermMode,
+      permissionMode: effectivePermission,
     });
 
     const session: ManagedSession = {
@@ -487,17 +488,10 @@ export class SessionManager {
       process,
       messageCount: 0,
       model: row.model ?? undefined,
-      permissionMode: resumePermMode,
+      permissionMode: sessionPermission ?? undefined,
       origin: row.origin as 'lobby' | 'cli' | 'lobby-manager',
-      planMode: this.pendingPlanMode.get(sessionId) ?? false,
       messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
     };
-
-    // Apply pending plan mode to the process
-    if (session.planMode) {
-      session.process.setPlanMode?.(true);
-      this.pendingPlanMode.delete(sessionId);
-    }
 
     // Wire up events BEFORE sending prompt to avoid race condition
     this.wireProcessEvents(session);
@@ -578,7 +572,7 @@ export class SessionManager {
           lastActiveAt: row.last_active_at,
           messageCount: 0,
           model: row.model ?? undefined,
-          permissionMode: row.permission_mode ?? undefined,
+          permissionMode: (row.permission_mode as PermissionMode | null) ?? undefined,
           cwd: row.cwd,
           origin: row.origin as 'lobby' | 'cli',
           messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
@@ -715,7 +709,7 @@ export class SessionManager {
           lastActiveAt: row.last_active_at,
           messageCount: 0,
           model: row.model ?? undefined,
-          permissionMode: row.permission_mode ?? undefined,
+          permissionMode: (row.permission_mode as PermissionMode | null) ?? undefined,
           cwd: row.cwd,
           origin: row.origin as 'lobby' | 'cli',
           messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
@@ -775,7 +769,7 @@ export class SessionManager {
     const spawnOptions: SpawnOptions = {
       cwd: session.cwd,
       model: session.model,
-      permissionMode: session.permissionMode,
+      permissionMode: this.resolvePermissionMode(session),
       ...(currentOpts ? {
         systemPrompt: currentOpts.systemPrompt,
         allowedTools: currentOpts.allowedTools,
@@ -813,6 +807,36 @@ export class SessionManager {
     };
     this.broadcastMessage(session.id, sysMsg);
     this.broadcastSessionUpdate(session);
+  }
+
+  getAdapterDefaults(): Array<{ adapterName: string; permissionMode: PermissionMode; displayName: string }> {
+    const defaults = this.db ? getAllAdapterDefaults(this.db) : [];
+    const defaultMap = new Map(defaults.map((d) => [d.adapter_name, d.permission_mode as PermissionMode]));
+    const result: Array<{ adapterName: string; permissionMode: PermissionMode; displayName: string }> = [];
+    for (const adapter of this.adapters.values()) {
+      result.push({
+        adapterName: adapter.name,
+        permissionMode: defaultMap.get(adapter.name) ?? 'supervised',
+        displayName: adapter.displayName,
+      });
+    }
+    return result;
+  }
+
+  setAdapterDefault(adapterName: string, permissionMode: PermissionMode): void {
+    if (!this.db) return;
+    setAdapterDefault(this.db, adapterName, permissionMode);
+  }
+
+  getAdapterPermissionMeta(): Record<string, { displayName: string; modeLabels: Record<string, string> }> {
+    const meta: Record<string, { displayName: string; modeLabels: Record<string, string> }> = {};
+    for (const adapter of this.adapters.values()) {
+      meta[adapter.name] = {
+        displayName: adapter.displayName,
+        modeLabels: adapter.permissionMeta.modeLabels,
+      };
+    }
+    return meta;
   }
 
   getSessionMode(sessionId: string): MessageMode {

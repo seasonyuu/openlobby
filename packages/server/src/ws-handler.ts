@@ -264,17 +264,6 @@ export function handleWebSocket(
           break;
         }
 
-        case 'session.plan-mode': {
-          console.log('[WS] session.plan-mode:', data.sessionId, data.enabled);
-          try {
-            sessionManager.setPlanMode(data.sessionId, data.enabled);
-          } catch (err) {
-            console.error('[WS] setPlanMode error:', err);
-            send({ type: 'error', sessionId: data.sessionId, error: String(err) });
-          }
-          break;
-        }
-
         case 'session.recover': {
           sessionManager.recoverSession(data.sessionId);
           break;
