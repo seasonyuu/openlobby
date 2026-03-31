@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useLobbyStore } from '../stores/lobby-store';
-import { wsDestroySession, wsConfigureSession, wsTogglePlanMode } from '../hooks/useWebSocket';
+import { wsDestroySession, wsConfigureSession } from '../hooks/useWebSocket';
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -28,6 +28,8 @@ export default function RoomHeader() {
     s.activeSessionId ? s.sessions[s.activeSessionId] : undefined,
   );
   const isLM = session?.origin === 'lobby-manager';
+  const adapterMeta = useLobbyStore((s) => s.adapterPermissionMeta);
+  const adapterDefaults = useLobbyStore((s) => s.adapterDefaults);
   const [showSettings, setShowSettings] = useState(false);
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [model, setModel] = useState('');
@@ -72,6 +74,15 @@ export default function RoomHeader() {
 
   const adapterLabel = session.adapterName === 'claude-code' ? 'Claude Code' : session.adapterName === 'codex-cli' ? 'Codex CLI' : session.adapterName === 'opencode' ? 'OpenCode' : session.adapterName;
 
+  const effectivePermission = (() => {
+    if (session.permissionMode) return session.permissionMode;
+    const def = adapterDefaults.find((d) => d.adapterName === session.adapterName);
+    return def?.permissionMode ?? 'supervised';
+  })();
+  const isInherited = !session.permissionMode;
+  const meta = adapterMeta[session.adapterName];
+  const nativeLabel = meta?.modeLabels?.[effectivePermission] ?? '';
+
   return (
     <div className="bg-gray-900 border-b border-gray-700 px-4 py-2 flex items-center justify-between relative">
       <div className="flex items-center gap-3 min-w-0">
@@ -81,18 +92,22 @@ export default function RoomHeader() {
         <span className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded">
           {adapterLabel}
         </span>
-        {session.planMode && (
-          <span className="text-xs text-amber-400 bg-amber-900/30 border border-amber-500/30 px-2 py-0.5 rounded flex items-center gap-1.5">
-            Plan Mode
-            <button
-              onClick={() => wsTogglePlanMode(activeSessionId, false)}
-              className="text-amber-300 hover:text-amber-100 transition-colors"
-              title="Exit plan mode"
+        {(() => {
+          const badgeConfig: Record<string, { color: string; label: string }> = {
+            auto: { color: 'text-green-400 bg-green-900/30 border-green-500/30', label: 'Auto' },
+            supervised: { color: 'text-yellow-400 bg-yellow-900/30 border-yellow-500/30', label: 'Supervised' },
+            readonly: { color: 'text-blue-400 bg-blue-900/30 border-blue-500/30', label: 'Readonly' },
+          };
+          const cfg = badgeConfig[effectivePermission] ?? badgeConfig.supervised;
+          return (
+            <span
+              className={`text-xs ${cfg.color} border px-2 py-0.5 rounded`}
+              title={nativeLabel ? `Maps to '${nativeLabel}' in ${adapterLabel}` : undefined}
             >
-              ×
-            </button>
-          </span>
-        )}
+              {cfg.label}{isInherited ? ' (default)' : ''}
+            </span>
+          );
+        })()}
         {session.model && (
           <span className="text-xs text-gray-500">{session.model}</span>
         )}
@@ -151,10 +166,23 @@ export default function RoomHeader() {
                   onChange={(e) => setPermissionMode(e.target.value)}
                   className="w-full bg-gray-800 text-gray-100 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
                 >
-                  <option value="">Keep current</option>
-                  <option value="default">Default</option>
-                  <option value="plan">Plan (Read-only)</option>
-                  <option value="bypassPermissions">Full Auto</option>
+                  <option value="">
+                    Use global default ({(() => {
+                      const def = adapterDefaults.find((d) => d.adapterName === session.adapterName);
+                      const defMode = def?.permissionMode ?? 'supervised';
+                      const defLabel = defMode.charAt(0).toUpperCase() + defMode.slice(1);
+                      return defLabel;
+                    })()})
+                  </option>
+                  {(['auto', 'supervised', 'readonly'] as const).map((mode) => {
+                    const native = meta?.modeLabels?.[mode] ?? '';
+                    const label = mode.charAt(0).toUpperCase() + mode.slice(1);
+                    return (
+                      <option key={mode} value={mode}>
+                        {label}{native ? ` (${native})` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
               <div>
