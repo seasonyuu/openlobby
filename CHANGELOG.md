@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.4.2 (2026-03-31)
+
+### Features
+
+- **Session ID resolution** — Add `resolveSession()` with alias map and `previousIds` tracking, so stale pre-migration UUIDs auto-resolve to current session IDs (c8b4530)
+- **Rebuild from database** — `rebuildSession()` can now resume sessions that exist only in SQLite (e.g., after server reload) (c8b4530)
+- **Unified PermissionMode** — New `PermissionMode` type (`auto`/`suggest`/`readonly`) with two-layer resolution (adapter defaults → session override), enforced immediately across Claude Code, Codex CLI, and OpenCode adapters (9d54629..dabfbaf)
+- **Adapter defaults settings** — Web UI dialog for configuring global per-adapter default permission modes (fa4a2e0)
+- **Permission badge & mode selector** — RoomHeader displays permission badge with unified mode selector (3867cd9)
+- **WeCom QR scan login** — Full QR code scanning flow for WeCom channel setup (89e07d5..1f383b5)
+
+### Bug Fixes
+
+- **fix(server):** Stale process events no longer affect new processes after `/new` rebuild (c8b4530)
+- **fix(server):** WebSocket handler auto-resolves stale session IDs for all message types (c8b4530)
+- **fix(server):** Message cache cleared on rebuild for clean slate; fresh history sent to frontend (c8b4530, 323e64f)
+- **fix(opencode):** Extract meaningful tool name from permission metadata (318cce2)
+- **fix(opencode):** Prevent idle events from clearing awaiting_approval status (40e6c1d)
+- **fix(server):** Correct WeCom QR scan response parsing — `bot_info.botid` not `bot_id` (3d56492)
+- **fix(server):** Correct WeCom QR API — use `GET /ai/qc/gen` and parse HTML response (7cd980e)
+- **fix:** Replace planMode references with permissionMode in frontend (59f70ba)
+
+### Documentation
+
+- Update CLAUDE.md workflow commands and add project command files (c850bc7)
+- Add permission mode redesign spec and implementation plan (69c0295, f9f6d43)
+- Add WeCom QR scan design spec and implementation plan (825a7b9, 9aded9d)
+
+### Other Changes
+
+- refactor(web): Extract `getMergedCommands` as reusable helper (323e64f)
+- refactor(core): Move `allowedTools` from `SpawnOptions` into Claude Code adapter (e2c6e66)
+- test: Update adapter tests to use unified PermissionMode (943275a)
+
 ## v0.4.1 (2026-03-31)
 
 ### Features
