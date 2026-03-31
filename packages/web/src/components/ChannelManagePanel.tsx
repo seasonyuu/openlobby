@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import QRCode from 'qrcode';
 import { useLobbyStore } from '../stores/lobby-store';
 import {
   wsListProviders,
@@ -7,6 +8,8 @@ import {
   wsToggleProvider,
   wsListBindings,
   wsUnbind,
+  wsWecomQrStart,
+  wsWecomQrCancel,
 } from '../hooks/useWebSocket';
 
 interface Props {
@@ -160,8 +163,7 @@ export default function ChannelManagePanel({ onClose }: Props) {
 /** Per-channel credential field definitions */
 const CHANNEL_FIELDS: Record<string, Array<{ key: string; label: string; required: boolean; type: string; placeholder?: string }>> = {
   wecom: [
-    { key: 'corpId', label: 'Corp ID', required: true, type: 'text', placeholder: 'ww1234567890' },
-    { key: 'agentId', label: 'Agent ID', required: true, type: 'text', placeholder: 'aibxxxxxxxx' },
+    { key: 'botId', label: 'Bot ID', required: true, type: 'text', placeholder: 'aibxxxxxxxx' },
     { key: 'secret', label: 'Secret', required: true, type: 'password' },
   ],
   telegram: [
@@ -180,8 +182,47 @@ function AddProviderForm({ onDone }: { onDone: () => void }) {
   const [channelName, setChannelName] = useState('wecom');
   const [accountId, setAccountId] = useState('');
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [manualMode, setManualMode] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  const qrStatus = useLobbyStore((s) => s.wecomQrStatus);
+  const setQrStatus = useLobbyStore((s) => s.setWecomQrStatus);
 
   const fields = CHANNEL_FIELDS[channelName] ?? [];
+  const isWecom = channelName === 'wecom';
+
+  // Generate QR data URL when qrUrl arrives
+  useEffect(() => {
+    if (qrStatus?.status === 'waiting' && qrStatus.qrUrl) {
+      QRCode.toDataURL(qrStatus.qrUrl, { width: 256, margin: 2 })
+        .then(setQrDataUrl)
+        .catch(() => setQrDataUrl(null));
+    } else {
+      setQrDataUrl(null);
+    }
+  }, [qrStatus?.status, qrStatus?.qrUrl]);
+
+  // Auto-add provider on scan success
+  useEffect(() => {
+    if (qrStatus?.status === 'success' && qrStatus.botId && qrStatus.secret && accountId.trim()) {
+      wsAddProvider({
+        channelName: 'wecom',
+        accountId: accountId.trim(),
+        credentials: { botId: qrStatus.botId, secret: qrStatus.secret },
+        enabled: true,
+      });
+      setQrStatus(null);
+      onDone();
+    }
+  }, [qrStatus?.status, qrStatus?.botId, qrStatus?.secret, accountId, onDone, setQrStatus]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      wsWecomQrCancel();
+      setQrStatus(null);
+    };
+  }, [setQrStatus]);
 
   const updateCredential = (key: string, value: string) => {
     setCredentials((prev) => ({ ...prev, [key]: value }));
@@ -191,18 +232,20 @@ function AddProviderForm({ onDone }: { onDone: () => void }) {
     setChannelName(name);
     setCredentials({});
     setAccountId('');
+    setManualMode(false);
+    wsWecomQrCancel();
+    setQrStatus(null);
   };
 
-  const isValid = () => {
+  const isManualValid = () => {
     if (!accountId.trim()) return false;
     return fields.filter((f) => f.required).every((f) => credentials[f.key]?.trim());
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isValid()) return;
+    if (!isManualValid()) return;
 
-    // Build credentials object — only include non-empty values
     const creds: Record<string, string> = {};
     for (const field of fields) {
       const val = credentials[field.key]?.trim();
@@ -218,8 +261,104 @@ function AddProviderForm({ onDone }: { onDone: () => void }) {
     onDone();
   };
 
+  const handleStartQr = () => {
+    if (!accountId.trim()) return;
+    setQrStatus(null);
+    wsWecomQrStart();
+  };
+
+  // QR Scan Mode UI (WeCom only, non-manual)
+  if (isWecom && !manualMode) {
+    return (
+      <div className="bg-gray-800 rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-300 font-medium">Add WeCom Bot (Scan)</span>
+          <button onClick={onDone} className="text-gray-400 hover:text-gray-200 text-xs">Cancel</button>
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">Account ID</label>
+          <input
+            type="text"
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            placeholder="e.g. my-bot-1"
+            className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-1.5 text-sm text-gray-100"
+          />
+        </div>
+
+        {/* QR Code Display Area */}
+        <div className="flex flex-col items-center py-3 space-y-2">
+          {!qrStatus && (
+            <button
+              onClick={handleStartQr}
+              disabled={!accountId.trim()}
+              className={`px-4 py-2 rounded-lg text-sm ${
+                accountId.trim()
+                  ? 'bg-blue-600 text-white hover:bg-blue-500'
+                  : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+              }`}
+            >
+              Generate QR Code
+            </button>
+          )}
+
+          {qrStatus?.status === 'generating' && (
+            <p className="text-gray-400 text-sm">Generating QR code...</p>
+          )}
+
+          {qrStatus?.status === 'waiting' && qrDataUrl && (
+            <>
+              <img src={qrDataUrl} alt="WeCom QR Code" className="w-48 h-48 rounded-lg" />
+              <p className="text-gray-400 text-xs">Scan with WeCom app</p>
+            </>
+          )}
+
+          {qrStatus?.status === 'expired' && (
+            <div className="text-center space-y-2">
+              <p className="text-yellow-400 text-sm">QR code expired</p>
+              <button
+                onClick={handleStartQr}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-500"
+              >
+                Regenerate
+              </button>
+            </div>
+          )}
+
+          {qrStatus?.status === 'error' && (
+            <div className="text-center space-y-2">
+              <p className="text-red-400 text-sm">{qrStatus.error ?? 'Unknown error'}</p>
+              <button
+                onClick={handleStartQr}
+                className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-500"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {qrStatus?.status === 'success' && (
+            <p className="text-green-400 text-sm">Scan successful! Adding provider...</p>
+          )}
+        </div>
+
+        {/* Manual input toggle */}
+        <div className="text-center">
+          <button
+            onClick={() => { setManualMode(true); wsWecomQrCancel(); setQrStatus(null); }}
+            className="text-xs text-gray-500 hover:text-gray-300 underline"
+          >
+            Manual input (botId + secret)
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Manual Mode (existing form, also used for non-WeCom channels)
   return (
-    <form onSubmit={handleSubmit} className="bg-gray-800 rounded-lg p-4 space-y-3">
+    <form onSubmit={handleManualSubmit} className="bg-gray-800 rounded-lg p-4 space-y-3">
       <div>
         <label className="block text-xs text-gray-400 mb-1">Channel Type</label>
         <select
@@ -257,7 +396,16 @@ function AddProviderForm({ onDone }: { onDone: () => void }) {
         </div>
       ))}
 
-      <div className="flex gap-2 justify-end">
+      <div className="flex gap-2 justify-end items-center">
+        {isWecom && (
+          <button
+            type="button"
+            onClick={() => { setManualMode(false); }}
+            className="text-xs text-gray-500 hover:text-gray-300 underline mr-auto"
+          >
+            Back to QR scan
+          </button>
+        )}
         <button
           type="button"
           onClick={onDone}
@@ -267,9 +415,9 @@ function AddProviderForm({ onDone }: { onDone: () => void }) {
         </button>
         <button
           type="submit"
-          disabled={!isValid()}
+          disabled={!isManualValid()}
           className={`px-3 py-1.5 rounded text-sm ${
-            isValid()
+            isManualValid()
               ? 'bg-blue-600 text-white hover:bg-blue-500'
               : 'bg-gray-700 text-gray-500 cursor-not-allowed'
           }`}
