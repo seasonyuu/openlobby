@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+// No external imports needed — uses native fetch only
 
 /** Status updates pushed to the WebSocket client */
 export interface WeComQrStatus {
@@ -9,9 +9,8 @@ export interface WeComQrStatus {
   error?: string;
 }
 
-const QR_GENERATE_URL = 'https://work.weixin.qq.com/ai/qc/generate';
+const QR_GENERATE_URL = 'https://work.weixin.qq.com/ai/qc/gen';
 const QR_QUERY_URL = 'https://work.weixin.qq.com/ai/qc/query_result';
-const VERIFY_URL = 'https://qyapi.weixin.qq.com/cgi-bin/aibot/cli/get_mcp_config';
 
 const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -34,27 +33,28 @@ export async function startWeComQrFlow(
   let authUrl: string;
 
   try {
-    const res = await fetch(QR_GENERATE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        source: 'wecom_cli_external',
-        type: getPlatformType(),
-      }),
-      signal,
-    });
+    const genUrl = `${QR_GENERATE_URL}?source=wecom_cli_external&type=${getPlatformType()}`;
+    const res = await fetch(genUrl, { signal });
 
     if (!res.ok) {
       onStatus({ status: 'error', error: `QR generate failed: HTTP ${res.status}` });
       return;
     }
 
-    const data = await res.json();
-    scode = data.scode ?? data.data?.scode;
-    authUrl = data.auth_url ?? data.data?.auth_url;
+    // Response is HTML with window.settings = {...} containing scode and auth_url
+    const html = await res.text();
+    const settingsMatch = html.match(/window\.settings\s*=\s*(\{[^}]+\})/);
+    if (!settingsMatch) {
+      onStatus({ status: 'error', error: 'QR generate: could not parse settings from response' });
+      return;
+    }
+
+    const settings = JSON.parse(settingsMatch[1]);
+    scode = settings.scode;
+    authUrl = settings.auth_url;
 
     if (!scode || !authUrl) {
-      onStatus({ status: 'error', error: 'QR generate returned invalid response' });
+      onStatus({ status: 'error', error: 'QR generate returned invalid response (missing scode/auth_url)' });
       return;
     }
   } catch (err) {
@@ -86,63 +86,24 @@ export async function startWeComQrFlow(
       if (!res.ok) continue;
 
       const data = await res.json();
-      const status = data.status ?? data.data?.status;
+      const result = data.data ?? data;
+      const pollStatus = result.status;
 
-      if (status === 'success' || status === 'authorized') {
-        const botId = data.bot_id ?? data.data?.bot_id;
-        const botSecret = data.bot_secret ?? data.data?.bot_secret;
+      if (pollStatus === 'success' || pollStatus === 'authorized') {
+        const botId = result.bot_id;
+        const botSecret = result.bot_secret;
 
         if (!botId || !botSecret) {
           onStatus({ status: 'error', error: 'Scan succeeded but credentials missing from response' });
           return;
         }
 
-        const verified = await verifyCredentials(botId, botSecret, signal);
-        if (signal.aborted) return;
-
-        if (verified) {
-          onStatus({ status: 'success', botId, secret: botSecret });
-        } else {
-          onStatus({ status: 'error', error: 'Credential verification failed' });
-        }
+        onStatus({ status: 'success', botId, secret: botSecret });
         return;
       }
     } catch (err) {
       if (signal.aborted) return;
       console.warn('[WeComQR] Poll error (will retry):', err instanceof Error ? err.message : err);
     }
-  }
-}
-
-async function verifyCredentials(
-  botId: string,
-  secret: string,
-  signal: AbortSignal,
-): Promise<boolean> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const nonce = randomBytes(16).toString('hex');
-  const hash = createHash('sha256')
-    .update(secret + botId + timestamp + nonce)
-    .digest('hex');
-
-  try {
-    const res = await fetch(VERIFY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        bot_id: botId,
-        timestamp,
-        nonce,
-        hash,
-      }),
-      signal,
-    });
-
-    if (!res.ok) return false;
-
-    const data = await res.json();
-    return data.errcode === 0 || data.errcode === undefined;
-  } catch {
-    return false;
   }
 }
