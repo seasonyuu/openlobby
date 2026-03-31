@@ -13,6 +13,7 @@ import type {
   SessionSummary,
   ControlDecision,
   AdapterCommand,
+  AdapterPermissionMeta,
 } from '../types.js';
 
 function makeLobbyMessage(
@@ -115,8 +116,8 @@ function sdkMessageToLobby(sessionId: string, msg: any): LobbyMessage[] {
   return messages;
 }
 
-/** Read-only tools allowed in plan mode */
-const PLAN_MODE_TOOLS = ['Read', 'Glob', 'Grep', 'Agent', 'WebSearch', 'WebFetch'];
+/** Read-only tools allowed in readonly mode */
+const READONLY_TOOLS = ['Read', 'Glob', 'Grep', 'Agent', 'WebSearch', 'WebFetch'];
 
 /** Fallback commands shown before any session loads the real list from SDK */
 const FALLBACK_COMMANDS: AdapterCommand[] = [
@@ -166,7 +167,6 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
   private spawnOptions: SpawnOptions;
   /** The real session ID assigned by Claude Code (set after first query) */
   private realSessionId: string | null = null;
-  private planMode = false;
   private pendingControls = new Map<
     string,
     {
@@ -235,8 +235,15 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
         ],
         cwd: this.spawnOptions.cwd,
         abortController: this.abortController,
-        // 'default' mode prompts for dangerous ops → routed through canUseTool
-        permissionMode: this.spawnOptions.permissionMode ?? 'default',
+        // Map unified PermissionMode to Claude SDK native value
+        permissionMode: (() => {
+          switch (this.spawnOptions.permissionMode) {
+            case 'auto': return 'bypassPermissions';
+            case 'readonly': return 'plan';
+            case 'supervised': return 'default';
+            default: return 'default';
+          }
+        })(),
         canUseTool: async (
           toolName: string,
           toolInput: Record<string, unknown>,
@@ -253,7 +260,7 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
       if (this.spawnOptions.systemPrompt) {
         queryOpts.systemPrompt = this.spawnOptions.systemPrompt;
       }
-      if (this.planMode) {
+      if (this.spawnOptions.permissionMode === 'readonly') {
         queryOpts.systemPrompt = (queryOpts.systemPrompt ?? '') + PLAN_MODE_SYSTEM_PROMPT;
       }
       if (this.spawnOptions.mcpServers) {
@@ -342,20 +349,28 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     interrupt?: boolean;
     toolUseID?: string;
   }> {
-    // In plan mode, auto-deny all non-read-only tools
-    if (this.planMode && !PLAN_MODE_TOOLS.includes(toolName)) {
-      console.log('[ClaudeCode] Plan mode: denied tool', toolName);
+    const mode = this.spawnOptions.permissionMode ?? 'supervised';
+
+    // Auto mode: approve everything immediately
+    if (mode === 'auto') {
+      console.log('[ClaudeCode] Auto mode: approved tool', toolName);
+      return Promise.resolve({ behavior: 'allow', updatedInput: toolInput, toolUseID });
+    }
+
+    // Readonly mode: deny non-read-only tools
+    if (mode === 'readonly' && !READONLY_TOOLS.includes(toolName)) {
+      console.log('[ClaudeCode] Readonly mode: denied tool', toolName);
       return Promise.resolve({
         behavior: 'deny',
-        message: 'Plan mode: only read-only tools are allowed',
+        message: 'Readonly mode: only read-only tools are allowed',
         toolUseID,
       });
     }
 
+    // Supervised mode: emit control message and wait for user approval
     const requestId = randomUUID();
     console.log('[ClaudeCode] Tool approval requested:', toolName, 'toolUseID:', toolUseID);
 
-    // Extract structured questions for AskUserQuestion tool
     const questions = toolName === 'AskUserQuestion' && Array.isArray(toolInput.questions)
       ? (toolInput.questions as Array<{
           question: string;
@@ -374,7 +389,6 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     });
     this.emit('message', controlMsg);
 
-    // Check if user already responded (pre-responded before canUseTool was called)
     const preResponded = this.preRespondedControls.get(requestId);
     if (preResponded) {
       this.preRespondedControls.delete(requestId);
@@ -395,7 +409,6 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
         resolve: (result) => resolve({ ...result, toolUseID }),
       });
 
-      // Auto-deny after 5 minutes if no response arrives (e.g., connection dropped)
       setTimeout(() => {
         if (this.pendingControls.has(requestId)) {
           console.warn('[ClaudeCode] Approval timed out for:', requestId);
@@ -456,11 +469,6 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
     this.realSessionId = sessionId;
   }
 
-  setPlanMode(enabled: boolean): void {
-    this.planMode = enabled;
-    console.log('[ClaudeCode] Plan mode:', enabled ? 'ON' : 'OFF');
-  }
-
   interrupt(): void {
     if (this.status !== 'running' && this.status !== 'awaiting_approval') return;
     console.log('[ClaudeCode] Interrupting current generation');
@@ -489,6 +497,13 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly name = 'claude-code';
   readonly displayName = 'Claude Code';
+  readonly permissionMeta: AdapterPermissionMeta = {
+    modeLabels: {
+      auto: 'bypassPermissions',
+      supervised: 'default',
+      readonly: 'plan',
+    },
+  };
   private detectedCliPath: string | undefined;
 
   async detect(): Promise<{
