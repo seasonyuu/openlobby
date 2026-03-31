@@ -271,7 +271,20 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
     if (!props.id) return;
 
     const mode = this.spawnOptions.permissionMode ?? 'supervised';
-    const toolName = props.title ?? props.type ?? 'unknown';
+
+    console.log('[OpenCode] Permission props:', JSON.stringify(props, null, 2));
+
+    // Extract meaningful tool name from permission properties.
+    // OpenCode permission events have: title (e.g. "question"), description,
+    // metadata (contains tool details like command, path, etc.)
+    const meta = props.metadata ?? {};
+    const toolName = meta.tool
+      ?? meta.command
+      ?? meta.path
+      ?? props.description
+      ?? props.title
+      ?? props.type
+      ?? 'unknown';
 
     console.log('[OpenCode] Permission requested:', toolName, 'id:', props.id, 'mode:', mode);
 
