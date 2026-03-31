@@ -109,6 +109,23 @@ export function initDb(dbPath?: string): Database.Database {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS adapter_defaults (
+      adapter_name    TEXT PRIMARY KEY,
+      permission_mode TEXT NOT NULL DEFAULT 'supervised'
+    )
+  `);
+
+  // Migration: convert old CLI-specific permission_mode values to unified enum
+  db.exec(`
+    UPDATE sessions SET permission_mode = 'auto'
+      WHERE permission_mode IN ('bypassPermissions', 'dontAsk');
+    UPDATE sessions SET permission_mode = 'readonly'
+      WHERE permission_mode = 'plan';
+    UPDATE sessions SET permission_mode = NULL
+      WHERE permission_mode IN ('default', '');
+  `);
+
   // Migration: add message_mode column if not exists
   try {
     db.exec(`ALTER TABLE sessions ADD COLUMN message_mode TEXT DEFAULT 'msg-tidy'`);
@@ -343,4 +360,26 @@ export function getServerConfig(db: Database.Database, key: string): string | un
 
 export function setServerConfig(db: Database.Database, key: string, value: string): void {
   db.prepare('INSERT OR REPLACE INTO server_config (key, value) VALUES (?, ?)').run(key, value);
+}
+
+// ─── Adapter Defaults ────────────────────────────────────────────────
+
+export interface AdapterDefaultRow {
+  adapter_name: string;
+  permission_mode: string;
+}
+
+export function getAdapterDefault(db: Database.Database, adapterName: string): AdapterDefaultRow | undefined {
+  return db.prepare('SELECT * FROM adapter_defaults WHERE adapter_name = ?').get(adapterName) as AdapterDefaultRow | undefined;
+}
+
+export function setAdapterDefault(db: Database.Database, adapterName: string, permissionMode: string): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO adapter_defaults (adapter_name, permission_mode)
+    VALUES (?, ?)
+  `).run(adapterName, permissionMode);
+}
+
+export function getAllAdapterDefaults(db: Database.Database): AdapterDefaultRow[] {
+  return db.prepare('SELECT * FROM adapter_defaults ORDER BY adapter_name').all() as AdapterDefaultRow[];
 }
