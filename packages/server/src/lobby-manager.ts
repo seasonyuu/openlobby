@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type {
   AgentAdapter,
   McpServerConfig,
+  PermissionMode,
 } from '@openlobby/core';
 import type { SessionManager } from './session-manager.js';
 import type Database from 'better-sqlite3';
@@ -139,14 +140,14 @@ export class LobbyManager {
   private buildSpawnOptions(): {
     cwd: string;
     systemPrompt: string;
-    permissionMode: string;
+    permissionMode: PermissionMode;
     allowedTools: string[];
     mcpServers: Record<string, import('@openlobby/core').McpServerConfig>;
   } {
     return {
       cwd: this.cwd,
       systemPrompt: LM_SYSTEM_PROMPT,
-      permissionMode: 'dontAsk',
+      permissionMode: 'auto',
       allowedTools: LM_ALLOWED_TOOLS,
       mcpServers: this.buildMcpServers(),
     };
