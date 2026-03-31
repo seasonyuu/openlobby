@@ -52,7 +52,10 @@ export type ClientMessage =
   | { type: 'session.view'; sessionId: string | null }
   | { type: 'channel.discover-plugins' }
   | { type: 'config.get'; key: string }
-  | { type: 'config.set'; key: string; value: string };
+  | { type: 'config.set'; key: string; value: string }
+  | { type: 'adapter.get-defaults' }
+  | { type: 'adapter.set-default'; adapterName: string; permissionMode: string }
+  | { type: 'adapter.get-meta' };
 
 /** 后端 → 前端 */
 export type ServerMessage =
@@ -82,4 +85,6 @@ export type ServerMessage =
   | { type: 'channel.binding-removed'; identityKey: string }
   | { type: 'completion.response'; sessionId: string; commands: AdapterCommand[]; cached?: boolean }
   | { type: 'channel.plugins-list'; plugins: ChannelPluginInfo[] }
-  | { type: 'config.value'; key: string; value: string };
+  | { type: 'config.value'; key: string; value: string }
+  | { type: 'adapter.defaults'; defaults: Array<{ adapterName: string; permissionMode: string; displayName: string }> }
+  | { type: 'adapter.meta'; meta: Record<string, { displayName: string; modeLabels: Record<string, string> }> };

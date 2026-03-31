@@ -65,6 +65,18 @@ export function handleWebSocket(
     sessionId: lmSessionIdForWelcome ?? undefined,
   });
 
+  // Send adapter permission metadata so frontend can render native labels
+  send({
+    type: 'adapter.meta',
+    meta: sessionManager.getAdapterPermissionMeta(),
+  } as any);
+
+  // Send adapter defaults
+  send({
+    type: 'adapter.defaults',
+    defaults: sessionManager.getAdapterDefaults(),
+  } as any);
+
   // Send welcome message to LM session on first WebSocket connection
   if (lmSessionIdForWelcome) {
     const welcomeMsg: LobbyMessage = {
@@ -404,6 +416,32 @@ export function handleWebSocket(
               }
             }
           }
+          break;
+        }
+
+        case 'adapter.get-defaults': {
+          send({
+            type: 'adapter.defaults',
+            defaults: sessionManager.getAdapterDefaults(),
+          } as any);
+          break;
+        }
+
+        case 'adapter.set-default': {
+          const d = data as { adapterName: string; permissionMode: string };
+          sessionManager.setAdapterDefault(d.adapterName, d.permissionMode as any);
+          send({
+            type: 'adapter.defaults',
+            defaults: sessionManager.getAdapterDefaults(),
+          } as any);
+          break;
+        }
+
+        case 'adapter.get-meta': {
+          send({
+            type: 'adapter.meta',
+            meta: sessionManager.getAdapterPermissionMeta(),
+          } as any);
           break;
         }
 
