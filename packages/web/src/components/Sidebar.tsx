@@ -6,6 +6,7 @@ import { wsRequestSessionHistory, wsDiscoverSessions } from '../hooks/useWebSock
 import DiscoverDialog from './DiscoverDialog';
 import ChannelManagePanel from './ChannelManagePanel';
 import GlobalSettings from './GlobalSettings';
+import GlobalSettingsDialog from './GlobalSettingsDialog';
 
 function formatRelativeTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -102,6 +103,7 @@ export default function Sidebar() {
   const lmSessionId = useLobbyStore((s) => s.lmSessionId);
   const [showChannelPanel, setShowChannelPanel] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
+  const [showGlobalSettingsDialog, setShowGlobalSettingsDialog] = useState(false);
   const channelProviders = useLobbyStore((s) => s.channelProviders);
 
   // Filter out the Lobby Manager session from the regular list
@@ -197,6 +199,12 @@ export default function Sidebar() {
           >
             ⚙️ Settings
           </button>
+          <button
+            onClick={() => setShowGlobalSettingsDialog(true)}
+            className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1 rounded hover:bg-gray-800"
+          >
+            ⚙ Global Settings
+          </button>
 
           {showGlobalSettings && (
             <GlobalSettings onClose={() => setShowGlobalSettings(false)} />
@@ -221,6 +229,9 @@ export default function Sidebar() {
       )}
       {showChannelPanel && (
         <ChannelManagePanel onClose={() => setShowChannelPanel(false)} />
+      )}
+      {showGlobalSettingsDialog && (
+        <GlobalSettingsDialog onClose={() => setShowGlobalSettingsDialog(false)} />
       )}
     </>
   );
