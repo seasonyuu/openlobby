@@ -254,6 +254,12 @@ function ensureConnection(url: string) {
         break;
       }
 
+      case 'wecom.qr-status': {
+        const { status, qrUrl, botId, secret, error } = data as any;
+        state.setWecomQrStatus({ status, qrUrl, botId, secret, error });
+        break;
+      }
+
       case 'error':
         console.error('[WS] Server error:', data.error);
         break;
@@ -355,6 +361,14 @@ export function wsTogglePlanMode(sessionId: string, enabled: boolean): void {
 
 export function wsListProviders(): void {
   wsSend({ type: 'channel.list-providers' });
+}
+
+export function wsWecomQrStart(): void {
+  wsSend({ type: 'wecom.qr-start' });
+}
+
+export function wsWecomQrCancel(): void {
+  wsSend({ type: 'wecom.qr-cancel' });
 }
 
 export function wsAddProvider(config: {

@@ -134,6 +134,16 @@ interface LobbyState {
 
   setAdapterPermissionMeta: (meta: Record<string, { displayName: string; modeLabels: Record<string, string> }>) => void;
   setAdapterDefaults: (defaults: Array<{ adapterName: string; permissionMode: string; displayName: string }>) => void;
+
+  // WeCom QR scan state
+  wecomQrStatus: null | {
+    status: 'generating' | 'waiting' | 'success' | 'expired' | 'error';
+    qrUrl?: string;
+    botId?: string;
+    secret?: string;
+    error?: string;
+  };
+  setWecomQrStatus: (status: LobbyState['wecomQrStatus']) => void;
 }
 
 // Track seen message IDs per session for deduplication
@@ -410,6 +420,9 @@ export const useLobbyStore = create<LobbyState>((set) => ({
 
   setAdapterPermissionMeta: (meta) => set({ adapterPermissionMeta: meta }),
   setAdapterDefaults: (defaults) => set({ adapterDefaults: defaults }),
+
+  wecomQrStatus: null,
+  setWecomQrStatus: (status) => set({ wecomQrStatus: status }),
 
   setSessionCommands: (sessionId, commands, cached) =>
     set((state) => ({
