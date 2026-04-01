@@ -111,6 +111,44 @@ export class ChannelRouterImpl implements ChannelRouter {
     this.sessionManager.onMessage('channel-router', this.handleSessionMessage.bind(this));
     this.sessionManager.onSessionUpdate('channel-router', this.handleSessionUpdate.bind(this));
     this.sessionManager.onNavigate('channel-router', this.handleNavigate.bind(this));
+
+    // Compact event notifications
+    this.sessionManager.onCompactSuggestion('channel-router-compact', (session) => {
+      const bindingRow = this.resolveResponseBinding(session.id);
+      if (!bindingRow) return;
+      const provider = this.providers.get(`${bindingRow.channel_name}:${bindingRow.account_id}`);
+      if (!provider) return;
+      const identity = {
+        channelName: bindingRow.channel_name,
+        accountId: bindingRow.account_id,
+        peerId: bindingRow.peer_id,
+        peerDisplayName: bindingRow.peer_display_name ?? undefined,
+      };
+      const tokensK = Math.round(session.tokenUsage.totalTokens / 1000);
+      const text = `⚠️ Session "${session.displayName}" context approaching limit (${tokensK}K tokens).\nReply /compact to compress, or /compact <instructions> with custom guidance.`;
+      provider.sendMessage({ identity, text, kind: 'message' })
+        .catch((err) => console.error('[ChannelRouter] compact suggestion notify error:', err));
+    });
+
+    this.sessionManager.onCompactComplete('channel-router-compact-done', (session, content) => {
+      const bindingRow = this.resolveResponseBinding(session.id);
+      if (!bindingRow) return;
+      const provider = this.providers.get(`${bindingRow.channel_name}:${bindingRow.account_id}`);
+      if (!provider) return;
+      const identity = {
+        channelName: bindingRow.channel_name,
+        accountId: bindingRow.account_id,
+        peerId: bindingRow.peer_id,
+        peerDisplayName: bindingRow.peer_display_name ?? undefined,
+      };
+      const preTokens = (content as Record<string, unknown>)?.preTokens as number | undefined;
+      const preK = preTokens ? Math.round(preTokens / 1000) : null;
+      const text = preK
+        ? `✂️ Session "${session.displayName}" compacted. (was ${preK}K tokens)`
+        : `✂️ Session "${session.displayName}" compacted.`;
+      provider.sendMessage({ identity, text, kind: 'message' })
+        .catch((err) => console.error('[ChannelRouter] compact complete notify error:', err));
+    });
   }
 
   /** Set the origin of the current turn for a session */
