@@ -187,7 +187,7 @@ export class SessionManager {
 
   private broadcastMessage(sessionId: string, msg: LobbyMessage): void {
     const session = this.sessions.get(sessionId);
-    const mode = session?.messageMode ?? 'msg-total';
+    const mode = session?.messageMode ?? 'msg-tidy';
 
     // msg-only: suppress tool_use and tool_result (control always passes through)
     if (mode === 'msg-only' && (msg.type === 'tool_use' || msg.type === 'tool_result')) {
@@ -1062,7 +1062,7 @@ export class SessionManager {
 
   getSessionMode(sessionId: string): MessageMode {
     const session = this.sessions.get(sessionId);
-    return session?.messageMode ?? 'msg-total';
+    return session?.messageMode ?? 'msg-tidy';
   }
 
   async cleanupIdle(maxIdleMinutes: number = 60): Promise<string[]> {

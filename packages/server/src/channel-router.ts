@@ -540,7 +540,10 @@ export class ChannelRouterImpl implements ChannelRouter {
   /** /msg-* — Switch message mode */
   private cmdMsgMode(identityKey: string, mode: MessageMode): string {
     const binding = getBinding(this.db, identityKey);
-    const sessionId = binding?.active_session_id;
+    if (!binding) {
+      return '⚠️ 当前未绑定任何会话。';
+    }
+    const sessionId = this.resolveSessionId(binding);
     if (!sessionId) {
       return '⚠️ 当前未绑定任何会话。';
     }
