@@ -218,7 +218,8 @@ export class TelegramBotProvider implements ChannelProvider {
     const commands = groups.flatMap(g =>
       g.commands.map((c: { command: string; description: string }) => ({
         command: c.command.slice(0, 32).toLowerCase(),
-        description: c.description.slice(0, 256),
+        // Telegram requires description 1-256 chars; fallback to command name if empty
+        description: (c.description || `/${c.command}`).slice(0, 256),
       }))
     );
 
@@ -230,7 +231,7 @@ export class TelegramBotProvider implements ChannelProvider {
       });
       this.log('info', `Synced ${commands.length} commands for chat ${peerId}`);
     } catch (err) {
-      this.log('error', 'syncCommands error:', err);
+      this.log('error', `syncCommands error for chat ${peerId} (${commands.length} cmds):`, err);
     }
   }
 

@@ -365,45 +365,23 @@ export class WeComBotProvider implements ChannelProvider {
       return;
     }
 
-    // Build markdown text with grouped commands
+    // Build compact markdown: group label + command names (no verbose descriptions)
     const lines: string[] = ['📋 **命令菜单**', ''];
     for (const group of groups) {
+      const cmds = group.commands.map(c => `/${c.command}`).join(' · ');
       lines.push(`**${group.label}**`);
-      for (const cmd of group.commands) {
-        lines.push(`\`/${cmd.command}\` — ${cmd.description}`);
-      }
+      lines.push(cmds);
       lines.push('');
     }
 
-    // Build button list from all commands (WeCom template_card supports up to 6 buttons)
-    // Pick the most useful commands as buttons, rest stay in text
-    const allCommands = groups.flatMap(g => g.commands);
-    const buttonCommands = allCommands.slice(0, 6);
-    const taskId = `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
     try {
-      await this.client.sendMessage(peerId, {
-        msgtype: 'template_card',
-        template_card: {
-          card_type: 'button_interaction',
-          main_title: { title: '📋 命令菜单' },
-          sub_title_text: lines.join('\n'),
-          button_list: buttonCommands.map((c, i) => ({
-            text: `/${c.command}`,
-            style: i === 0 ? 1 : 2,
-            key: `cmd:/${c.command}`,
-          })),
-          task_id: taskId,
-        },
-      });
-      this.log('info', `Sent command menu card to ${peerId}`);
-    } catch (err) {
-      this.log('error', 'sendCommandMenu error:', err);
-      // Fallback to plain markdown
       await this.client.sendMessage(peerId, {
         msgtype: 'markdown',
         markdown: { content: lines.join('\n') },
       });
+      this.log('info', `Sent command menu to ${peerId}`);
+    } catch (err) {
+      this.log('error', 'sendCommandMenu error:', err);
     }
   }
 
