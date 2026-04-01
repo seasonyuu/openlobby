@@ -30,6 +30,8 @@ export type {
   ChannelRouter,
   ChannelPluginModule,
   ChannelPluginInfo,
+  CommandGroup,
+  CommandEntry,
 } from './channel.js';
 export { toIdentityKey } from './channel.js';
 

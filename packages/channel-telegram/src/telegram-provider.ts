@@ -3,6 +3,7 @@ import type {
   ChannelRouter,
   ChannelProviderConfig,
   OutboundChannelMessage,
+  CommandGroup,
 } from '@openlobby/core';
 import {
   TelegramBotApi,
@@ -210,6 +211,26 @@ export class TelegramBotProvider implements ChannelProvider {
       this.log('info', `Card updated: ${taskId} → ${resultText}`);
     } catch (err) {
       this.log('error', 'updateCard error:', err);
+    }
+  }
+
+  async syncCommands(peerId: string, groups: CommandGroup[]): Promise<void> {
+    const commands = groups.flatMap(g =>
+      g.commands.map((c: { command: string; description: string }) => ({
+        command: c.command.slice(0, 32).toLowerCase(),
+        description: c.description.slice(0, 256),
+      }))
+    );
+
+    if (commands.length === 0) return;
+
+    try {
+      await this.api.setMyCommands(commands, {
+        scope: { type: 'chat', chat_id: Number(peerId) },
+      });
+      this.log('info', `Synced ${commands.length} commands for chat ${peerId}`);
+    } catch (err) {
+      this.log('error', 'syncCommands error:', err);
     }
   }
 
