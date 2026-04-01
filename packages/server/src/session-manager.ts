@@ -793,10 +793,8 @@ export class SessionManager {
     displayName?: string;
     cwd: string;
     jsonlPath?: string;
-    lastActiveAt?: number;
   }): SessionSummary {
     const now = Date.now();
-    const activeAt = data.lastActiveAt ?? now;
     if (this.db) {
       upsertSession(this.db, {
         id: data.sessionId,
@@ -806,8 +804,8 @@ export class SessionManager {
         jsonl_path: data.jsonlPath ?? null,
         origin: 'cli',
         status: 'idle',
-        created_at: activeAt,
-        last_active_at: activeAt,
+        created_at: now,
+        last_active_at: now,
         model: null,
         tags: null,
         permission_mode: null,
@@ -825,7 +823,7 @@ export class SessionManager {
       adapterName: data.adapterName,
       displayName: data.displayName ?? data.sessionId.slice(0, 8),
       status: 'idle',
-      lastActiveAt: activeAt,
+      lastActiveAt: now,
       messageCount: 0,
       cwd: data.cwd,
       origin: 'cli',

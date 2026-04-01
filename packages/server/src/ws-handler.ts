@@ -284,7 +284,6 @@ export function handleWebSocket(
             displayName: data.displayName,
             cwd: data.cwd,
             jsonlPath: data.jsonlPath,
-            lastActiveAt: (data as { lastActiveAt?: number }).lastActiveAt,
           });
           send({ type: 'session.created', session: imported });
           break;
