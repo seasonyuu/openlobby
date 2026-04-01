@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.4.3 (2026-04-02)
+
+### Features
+
+- **Compact command** — Per-session token tracking with auto-prompt, compact events for Claude Code and OpenCode, WebSocket action, IM notifications, and compact button in session header toolbar (2558d13..f092827)
+- **Numbered session list** — `/ls` shows numbered sessions; `/goto` supports selecting by number (c1cf1e9)
+- **IM command menu sync** — `CommandGroup` types, `syncCommands` for ChannelProvider, `/cmd` command, WeCom card menu, Telegram `setMyCommands`, and 4 trigger-point wiring (a3db810..fea8d06)
+- **Merged settings panel** — Web settings panels merged; version displayed in sidebar (71eab37)
+
+### Bug Fixes
+
+- **fix:** msg-tidy mode not applied in IM due to session resolution and fallback bugs (c7e48e2)
+- **fix:** Filter out Claude Code subagent sessions from discovery (11783db)
+- **fix:** Import sessions oldest-first so recent ones sort to top (d12d3f6)
+- **fix(telegram):** Sanitize command names for `setMyCommands` API (68e3b64)
+- **fix(telegram):** Empty description rejection + WeCom `/cmd` compact markdown (7ad9bd3)
+
+### Documentation
+
+- Add compact command design spec and implementation plan (6d5284a, d3aa17d)
+- Add `/ls` + `/goto` numbering design spec (7d789b7)
+- Add IM command menu design spec and implementation plan (5754759, 46c8fc3)
+
+### Other Changes
+
+- Revert timestamp-related fixes that caused regressions (7cd76d1, c353164)
+
 ## v0.4.2 (2026-03-31)
 
 ### Features
