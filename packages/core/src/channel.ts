@@ -132,6 +132,9 @@ export interface ChannelProvider {
     path: string;
     handler: (request: unknown, reply: unknown) => Promise<void>;
   }>;
+
+  /** Sync command menu to IM platform (per-chat). Optional — providers that don't support command registration can skip. */
+  syncCommands?(peerId: string, groups: CommandGroup[]): Promise<void>;
 }
 
 /** 路由器接口，Provider 通过它提交入站消息 */
@@ -152,4 +155,15 @@ export interface ChannelPluginInfo {
   displayName: string;
   packageName: string;
   version?: string;
+}
+
+/** A named group of slash commands (e.g. "OpenLobby", "Claude Code") */
+export interface CommandGroup {
+  label: string;
+  commands: CommandEntry[];
+}
+
+export interface CommandEntry {
+  command: string;
+  description: string;
 }
