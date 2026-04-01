@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   AgentAdapter,
   AgentProcess,
@@ -41,6 +42,15 @@ export interface ManagedSession {
   lastMessage?: string;
   origin: 'lobby' | 'cli' | 'lobby-manager';
   messageMode: MessageMode;
+  /** Cumulative token usage for compact threshold tracking */
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    compactCount: number;
+    /** Suppress repeated compact prompts until next compact/reset */
+    compactPrompted: boolean;
+  };
 }
 
 export class SessionManager {
@@ -68,6 +78,10 @@ export class SessionManager {
   private viewerSessions = new Map<string, string>();
   /** Maps old (temporary) session IDs to their current IDs after syncSessionId migrations */
   private sessionIdAliases = new Map<string, string>();
+  private compactSuggestionListeners = new Map<
+    string,
+    (session: ManagedSession) => void
+  >();
 
   constructor(db?: Database.Database) {
     this.db = db ?? null;
@@ -125,6 +139,17 @@ export class SessionManager {
 
   removeCommandsListener(listenerId: string): void {
     this.commandsListeners.delete(listenerId);
+  }
+
+  onCompactSuggestion(
+    listenerId: string,
+    handler: (session: ManagedSession) => void,
+  ): void {
+    this.compactSuggestionListeners.set(listenerId, handler);
+  }
+
+  removeCompactSuggestionListener(listenerId: string): void {
+    this.compactSuggestionListeners.delete(listenerId);
   }
 
   /** Get cached commands for a session from SQLite */
@@ -322,6 +347,41 @@ export class SessionManager {
       cache.push(msg);
 
       this.broadcastMessage(session.id, msg);
+
+      // Accumulate token usage from result messages
+      if (msg.type === 'result' && msg.meta?.tokenUsage) {
+        const tu = msg.meta.tokenUsage as { input: number; output: number };
+        session.tokenUsage.inputTokens += tu.input;
+        session.tokenUsage.outputTokens += tu.output;
+        session.tokenUsage.totalTokens += tu.input + tu.output;
+
+        // Check compact threshold
+        const threshold = this.db
+          ? parseInt(getServerConfig(this.db, 'compactThreshold') ?? '150000', 10)
+          : 150000;
+
+        if (
+          session.tokenUsage.totalTokens >= threshold &&
+          !session.tokenUsage.compactPrompted
+        ) {
+          session.tokenUsage.compactPrompted = true;
+          const suggestionMsg: LobbyMessage = {
+            id: randomUUID(),
+            sessionId: session.id,
+            timestamp: Date.now(),
+            type: 'system',
+            content: {
+              compactSuggestion: true,
+              currentTokens: session.tokenUsage.totalTokens,
+              threshold,
+            },
+          };
+          this.broadcastMessage(session.id, suggestionMsg);
+          for (const handler of this.compactSuggestionListeners.values()) {
+            handler(session);
+          }
+        }
+      }
     });
 
     process.on('commands', (commands: AdapterCommand[]) => {
@@ -411,6 +471,13 @@ export class SessionManager {
       permissionMode: options.permissionMode,
       origin,
       messageMode: (options as any).messageMode ?? (this.db ? (getServerConfig(this.db, 'defaultMessageMode') as MessageMode | undefined) : undefined) ?? 'msg-tidy',
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        compactCount: 0,
+        compactPrompted: false,
+      },
     };
 
     this.wireProcessEvents(session);
@@ -450,6 +517,13 @@ export class SessionManager {
       permissionMode: options.permissionMode,
       origin,
       messageMode: (options as any).messageMode ?? 'msg-tidy',
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        compactCount: 0,
+        compactPrompted: false,
+      },
     };
     this.wireProcessEvents(session);
     this.sessions.set(session.id, session);
@@ -536,6 +610,13 @@ export class SessionManager {
       permissionMode: sessionPermission ?? undefined,
       origin: row.origin as 'lobby' | 'cli' | 'lobby-manager',
       messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        compactCount: 0,
+        compactPrompted: false,
+      },
     };
 
     // Wire up events BEFORE sending prompt to avoid race condition
@@ -838,25 +919,33 @@ export class SessionManager {
           permissionMode: (row.permission_mode as PermissionMode | null) ?? undefined,
           origin: row.origin as 'lobby' | 'cli' | 'lobby-manager',
           messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
+          tokenUsage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            compactCount: 0,
+            compactPrompted: false,
+          },
         };
 
-        this.wireProcessEvents(session);
-        this.sessions.set(session.id, session);
-        this.persistSessionStatus(session);
+        const rebuilt = session;
+        this.wireProcessEvents(rebuilt);
+        this.sessions.set(rebuilt.id, rebuilt);
+        this.persistSessionStatus(rebuilt);
 
         // Broadcast that the session is now alive
         const sysMsg: LobbyMessage = {
           id: `rebuild-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          sessionId: session.id,
+          sessionId: rebuilt.id,
           timestamp: Date.now(),
           type: 'system',
           content: 'CLI session rebuilt (resumed from database)',
         };
         // Reset cache to only contain the rebuild notice
-        this.messageCache.set(session.id, [sysMsg]);
+        this.messageCache.set(rebuilt.id, [sysMsg]);
 
-        this.broadcastMessage(session.id, sysMsg);
-        this.broadcastSessionUpdate(session);
+        this.broadcastMessage(rebuilt.id, sysMsg);
+        this.broadcastSessionUpdate(rebuilt);
         return;
       }
     }
