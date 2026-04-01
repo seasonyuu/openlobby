@@ -222,6 +222,18 @@ export class TelegramBotApi {
     });
   }
 
+  async setMyCommands(
+    commands: Array<{ command: string; description: string }>,
+    options?: {
+      scope?: { type: string; chat_id?: number; user_id?: number };
+    },
+  ): Promise<boolean> {
+    return this.call('setMyCommands', {
+      commands,
+      ...options,
+    });
+  }
+
   // ─── Internal ──────────────────────────────────────────────────
 
   private async call<T>(method: string, params?: Record<string, unknown>): Promise<T> {
