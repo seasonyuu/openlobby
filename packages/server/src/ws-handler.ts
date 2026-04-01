@@ -491,6 +491,14 @@ export function handleWebSocket(
           break;
         }
 
+        case 'compact': {
+          const compactSessionId = data.sessionId as string;
+          const instructions = (data as { instructions?: string }).instructions ?? '';
+          const compactCmd = '/compact' + (instructions ? ' ' + instructions : '');
+          await sessionManager.sendMessage(compactSessionId, compactCmd);
+          break;
+        }
+
         default: {
           send({
             type: 'error',

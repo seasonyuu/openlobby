@@ -57,7 +57,8 @@ export type ClientMessage =
   | { type: 'adapter.set-default'; adapterName: string; permissionMode: string }
   | { type: 'adapter.get-meta' }
   | { type: 'wecom.qr-start' }
-  | { type: 'wecom.qr-cancel' };
+  | { type: 'wecom.qr-cancel' }
+  | { type: 'compact'; sessionId: string; instructions?: string };
 
 /** 后端 → 前端 */
 export type ServerMessage =
