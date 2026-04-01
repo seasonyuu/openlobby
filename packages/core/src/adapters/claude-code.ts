@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execSync, spawn as cpSpawn } from 'node:child_process';
 import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join, basename } from 'node:path';
@@ -51,7 +51,30 @@ function sdkMessageToLobby(sessionId: string, msg: any): LobbyMessage[] {
 
   switch (msg.type) {
     case 'system': {
-      // Skip system init messages — they're internal metadata
+      // Compact boundary — emitted when compaction completes
+      if (msg.subtype === 'compact_boundary') {
+        const metadata = msg.compact_metadata as { trigger: string; pre_tokens: number } | undefined;
+        messages.push(
+          makeLobbyMessage(sessionId, 'system', {
+            compact: true,
+            trigger: metadata?.trigger ?? 'manual',
+            preTokens: metadata?.pre_tokens ?? 0,
+          }),
+        );
+        return messages;
+      }
+
+      // Compacting status — emitted while compact is running
+      if (msg.subtype === 'status' && msg.status === 'compacting') {
+        messages.push(
+          makeLobbyMessage(sessionId, 'system', {
+            compacting: true,
+          }),
+        );
+        return messages;
+      }
+
+      // Skip other system init messages — they're internal metadata
       break;
     }
 
@@ -234,6 +257,20 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
       const queryOpts: any = {
         // Point SDK to the real Claude CLI binary (avoids bundled-path mismatch)
         pathToClaudeCodeExecutable: this.claudeCliPath,
+        // Workaround for SDK spawn ENOENT bug (anthropics/claude-code#4383, #14464):
+        // The SDK's isNativeBinary() mishandles symlinked/native-installer binaries,
+        // causing child_process.spawn() to fail with ENOENT despite the file existing.
+        // Using spawnClaudeCodeProcess with shell:true lets the OS shell handle execution.
+        spawnClaudeCodeProcess: (opts: { command: string; args: string[]; cwd: string; env: Record<string, string>; signal: AbortSignal }) => {
+          const child = cpSpawn(opts.command, opts.args, {
+            cwd: opts.cwd,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: opts.env,
+            signal: opts.signal,
+            shell: true,
+          });
+          return child;
+        },
         // Pass sanitized env to the spawned CLI process
         env: subprocessEnv,
         // Load user/project/local settings so MCP servers, skills, hooks, etc. are available
@@ -536,16 +573,42 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
 
+  /**
+   * Ensure the cached CLI path still exists; if not, re-detect.
+   * Returns the validated path or undefined (SDK will fall back to its bundled cli.js).
+   */
+  private ensureCliPath(): string | undefined {
+    if (this.detectedCliPath && existsSync(this.detectedCliPath)) {
+      return this.detectedCliPath;
+    }
+    // Cached path is stale — try to re-detect
+    try {
+      const cliPath = execSync('which claude', { encoding: 'utf-8' }).trim();
+      if (cliPath && existsSync(cliPath)) {
+        console.log(`[ClaudeCodeAdapter] Re-detected claude at: ${cliPath}`);
+        this.detectedCliPath = cliPath;
+        return cliPath;
+      }
+    } catch {
+      // claude not found in PATH
+    }
+    console.warn('[ClaudeCodeAdapter] Claude CLI not found, falling back to SDK bundled executable');
+    this.detectedCliPath = undefined;
+    return undefined;
+  }
+
   async spawn(options: SpawnOptions): Promise<AgentProcess> {
     const sessionId = randomUUID();
-    console.log('[ClaudeCodeAdapter] Spawning session:', sessionId);
-    return new ClaudeCodeProcess(sessionId, options as ClaudeCodeSpawnOptions, this.detectedCliPath);
+    const cliPath = this.ensureCliPath();
+    console.log('[ClaudeCodeAdapter] Spawning session:', sessionId, 'cli:', cliPath ?? '(sdk-default)');
+    return new ClaudeCodeProcess(sessionId, options as ClaudeCodeSpawnOptions, cliPath);
   }
 
   async resume(
     sessionId: string,
     options?: ResumeOptions,
   ): Promise<AgentProcess> {
+    const cliPath = this.ensureCliPath();
     const proc = new ClaudeCodeProcess(sessionId, {
       cwd: options?.cwd ?? process.cwd(),
       systemPrompt: options?.systemPrompt,
@@ -553,7 +616,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       allowedTools: (options as ClaudeCodeSpawnOptions | undefined)?.allowedTools,
       mcpServers: options?.mcpServers,
       model: options?.model,
-    }, this.detectedCliPath);
+    }, cliPath);
     // Mark as resume so sendMessage() uses SDK resume instead of fresh query
     proc.setResumeId(sessionId);
     // NOTE: Do NOT send prompt here. The caller must wire events first,
