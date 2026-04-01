@@ -8,6 +8,7 @@ import type {
   LobbyMessage,
   SessionSummary,
   MessageMode,
+  CommandGroup,
 } from '@openlobby/core';
 import { toIdentityKey } from '@openlobby/core';
 import type Database from 'better-sqlite3';
@@ -426,7 +427,7 @@ export class ChannelRouterImpl implements ChannelRouter {
     identity: InboundChannelMessage['identity'],
   ): Promise<string | null> {
     const parts = input.split(/\s+/);
-    const cmd = parts[0].toLowerCase();
+    const cmd = parts[0].toLowerCase().replace(/_/g, '-');
     const arg = parts.slice(1).join(' ').trim();
 
     // IM-specific commands (need binding/identity context)
@@ -449,6 +450,8 @@ export class ChannelRouterImpl implements ChannelRouter {
       case '/msg-tidy':
       case '/msg-total':
         return this.cmdMsgMode(identityKey, cmd.slice(1) as MessageMode);
+      case '/cmd':
+        return this.cmdShowMenu(identityKey, identity);
     }
 
     // Delegate to shared handler for common commands (/help, /ls, /add, /rm)
@@ -553,6 +556,44 @@ export class ChannelRouterImpl implements ChannelRouter {
     } catch (err) {
       return `⚠️ 切换失败: ${err instanceof Error ? err.message : String(err)}`;
     }
+  }
+
+  /** /cmd — Show command menu via provider card or formatted text */
+  private cmdShowMenu(
+    identityKey: string,
+    identity: InboundChannelMessage['identity'],
+  ): string {
+    const binding = getBinding(this.db, identityKey);
+    const sessionId = binding ? this.resolveSessionId(binding) : null;
+    const groups = sessionId
+      ? this.buildCommandGroups(sessionId)
+      : this.buildCommandGroups(this.lobbyManager?.getSessionId() ?? '');
+
+    const provider = this.providers.get(`${identity.channelName}:${identity.accountId}`);
+
+    // If provider has sendCommandMenu (e.g. WeCom), use it
+    const wecomProvider = provider as any;
+    if (typeof wecomProvider?.sendCommandMenu === 'function') {
+      // Ensure cache is fresh, then send card
+      if (provider?.syncCommands) {
+        provider.syncCommands(identity.peerId, groups).catch(() => {});
+      }
+      wecomProvider.sendCommandMenu(identity.peerId).catch(
+        (err: Error) => console.error('[ChannelRouter] sendCommandMenu error:', err),
+      );
+      return ''; // Card sent directly by provider; return empty to suppress text reply
+    }
+
+    // Fallback: return formatted text (works for Telegram and any other provider)
+    const lines: string[] = ['📋 **命令菜单**', ''];
+    for (const group of groups) {
+      lines.push(`**${group.label}**`);
+      for (const cmd of group.commands) {
+        lines.push(`\`/${cmd.command}\` — ${cmd.description}`);
+      }
+      lines.push('');
+    }
+    return lines.join('\n');
   }
 
   /** /exit — Return to Lobby Manager */
@@ -1273,6 +1314,61 @@ export class ChannelRouterImpl implements ChannelRouter {
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────
+
+  /** Build layered command groups: OpenLobby built-in + current adapter commands */
+  private buildCommandGroups(sessionId: string): CommandGroup[] {
+    const lobbyGroup: CommandGroup = {
+      label: 'OpenLobby',
+      commands: [
+        { command: 'help',      description: '显示帮助' },
+        { command: 'ls',        description: '列出所有会话' },
+        { command: 'goto',      description: '切换会话' },
+        { command: 'add',       description: '创建新会话' },
+        { command: 'rm',        description: '销毁会话' },
+        { command: 'stop',      description: '打断模型回复' },
+        { command: 'new',       description: '重建 CLI 会话' },
+        { command: 'bind',      description: '绑定到会话' },
+        { command: 'unbind',    description: '解绑当前会话' },
+        { command: 'info',      description: '当前会话信息' },
+        { command: 'msg_only',  description: '仅显示回复' },
+        { command: 'msg_tidy',  description: '折叠工具调用' },
+        { command: 'msg_total', description: '显示全部消息' },
+        { command: 'exit',      description: '返回 Lobby Manager' },
+        { command: 'compact',   description: '压缩上下文' },
+        { command: 'cmd',       description: '显示命令菜单' },
+      ],
+    };
+
+    const adapterCommands = this.sessionManager.getCachedCommands(sessionId);
+    const info = this.sessionManager.getSessionInfo(sessionId);
+    const adapterLabel = info?.adapterName ?? 'CLI';
+
+    if (adapterCommands && adapterCommands.length > 0) {
+      const adapterGroup: CommandGroup = {
+        label: adapterLabel,
+        commands: adapterCommands.map(c => ({
+          command: c.name.replace(/^\//, '').replace(/-/g, '_'),
+          description: c.description ?? '',
+        })),
+      };
+      return [lobbyGroup, adapterGroup];
+    }
+
+    return [lobbyGroup];
+  }
+
+  /** Push current command groups to the IM provider for a specific identity */
+  private syncCommandsToProvider(identityKey: string, sessionId: string): void {
+    const binding = getBinding(this.db, identityKey);
+    if (!binding) return;
+
+    const provider = this.providers.get(`${binding.channel_name}:${binding.account_id}`);
+    if (!provider?.syncCommands) return;
+
+    const groups = this.buildCommandGroups(sessionId);
+    provider.syncCommands(binding.peer_id, groups)
+      .catch(err => console.error('[ChannelRouter] syncCommands error:', err));
+  }
 
   private createDefaultBinding(identity: InboundChannelMessage['identity']): ChannelBindingRow {
     const identityKey = toIdentityKey(identity);
