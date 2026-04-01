@@ -67,16 +67,19 @@ export default function DiscoverDialog({ onClose }: Props) {
 
   const handleImport = () => {
     setImporting(true);
-    for (const session of discoveredSessions) {
-      if (selected.has(session.id)) {
-        wsImportSession({
-          sessionId: session.id,
-          adapterName: session.adapterName,
-          displayName: session.displayName,
-          cwd: session.cwd,
-          jsonlPath: session.jsonlPath,
-        });
-      }
+    // Import oldest-first so the most recent session gets the highest
+    // Date.now() and naturally sorts to the top of the session list.
+    const toImport = discoveredSessions
+      .filter((s) => selected.has(s.id))
+      .sort((a, b) => a.lastActiveAt - b.lastActiveAt);
+    for (const session of toImport) {
+      wsImportSession({
+        sessionId: session.id,
+        adapterName: session.adapterName,
+        displayName: session.displayName,
+        cwd: session.cwd,
+        jsonlPath: session.jsonlPath,
+      });
     }
     setTimeout(() => {
       setImporting(false);
