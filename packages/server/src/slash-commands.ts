@@ -76,6 +76,8 @@ export async function handleSlashCommand(
       return null; // Needs session context — handled by caller
     case '/info':
       return null; // Needs session context — handled by caller
+    case '/cmd':
+      return null; // Needs provider context — handled by caller (IM only)
     case '/bind':
       return null; // Needs identity context — handled by caller (IM only)
     case '/unbind':
@@ -102,6 +104,8 @@ function cmdHelp(): SlashCommandResult {
       '`/msg-only` — 仅推送回复内容',
       '`/msg-tidy` — 工具调用折叠为摘要',
       '`/msg-total` — 推送全部消息',
+      '`/compact` — 压缩当前会话上下文',
+      '`/cmd` — 显示命令菜单 (IM)',
       '`/bind <sessionId>` — 绑定到指定会话 (IM)',
       '`/unbind` — 解绑当前会话 (IM)',
     ].join('\n'),
