@@ -75,6 +75,7 @@ export default function DiscoverDialog({ onClose }: Props) {
           displayName: session.displayName,
           cwd: session.cwd,
           jsonlPath: session.jsonlPath,
+          lastActiveAt: session.lastActiveAt,
         });
       }
     }

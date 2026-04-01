@@ -38,6 +38,7 @@ export type ClientMessage =
       displayName?: string;
       cwd: string;
       jsonlPath?: string;
+      lastActiveAt?: number;
     }
   | { type: 'channel.list-providers' }
   | { type: 'channel.add-provider'; config: ChannelProviderConfig }

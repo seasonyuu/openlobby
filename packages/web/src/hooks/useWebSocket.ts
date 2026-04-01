@@ -344,6 +344,7 @@ export function wsImportSession(data: {
   displayName?: string;
   cwd: string;
   jsonlPath?: string;
+  lastActiveAt?: number;
 }): void {
   wsSend({ type: 'session.import', ...data });
 }
