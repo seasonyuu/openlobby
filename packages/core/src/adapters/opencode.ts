@@ -148,6 +148,17 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
         this.handleSessionError(event.properties);
         break;
 
+      case 'session.compacted': {
+        const compactProps = event.properties as { sessionID?: string; tokens?: number };
+        if (compactProps.sessionID && compactProps.sessionID !== this.sessionId) return;
+        this.emit('message', makeLobbyMessage(this.sessionId, 'system', {
+          compact: true,
+          trigger: 'manual',
+          preTokens: compactProps.tokens ?? 0,
+        }));
+        break;
+      }
+
       default:
         // Ignore other events (lsp.*, pty.*, tui.*, file.edited, etc.)
         break;
@@ -221,7 +232,16 @@ class OpenCodeProcess extends EventEmitter implements AgentProcess {
         break;
       }
 
-      // Ignore reasoning, step-start, step-finish, snapshot, patch, agent, retry, compaction
+      case 'compaction': {
+        this.emit('message', makeLobbyMessage(this.sessionId, 'system', {
+          compact: true,
+          trigger: 'manual',
+          preTokens: 0,
+        }));
+        break;
+      }
+
+      // Ignore reasoning, step-start, step-finish, snapshot, patch, agent, retry
       default:
         break;
     }
