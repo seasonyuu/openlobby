@@ -58,7 +58,9 @@ export type ClientMessage =
   | { type: 'adapter.get-meta' }
   | { type: 'wecom.qr-start' }
   | { type: 'wecom.qr-cancel' }
-  | { type: 'compact'; sessionId: string; instructions?: string };
+  | { type: 'compact'; sessionId: string; instructions?: string }
+  | { type: 'session.pin'; sessionId: string; pinned: boolean }
+  | { type: 'session.rename'; sessionId: string; displayName: string };
 
 /** 后端 → 前端 */
 export type ServerMessage =
