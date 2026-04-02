@@ -47,9 +47,9 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [showSlashMenu, setShowSlashMenu] = useState(false);
-  const [slashFilter, setSlashFilter] = useState('');
+  const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
+  const prevSlashQueryRef = useRef<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -81,26 +81,34 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
     adjustHeight();
   }, [value, adjustHeight]);
 
-  // Slash command detection
-  useEffect(() => {
-    if (value.startsWith('/')) {
-      const query = value.slice(1).split(' ')[0]; // text after "/" before first space
-      if (!value.includes(' ')) {
-        // Still typing the command name
-        setSlashFilter(query);
-        setShowSlashMenu(true);
-        setSlashIndex(0);
-        // Fetch commands if not cached
-        if (activeSessionId && !sessionCommands) {
-          wsRequestCompletions(activeSessionId);
-        }
-      } else {
-        setShowSlashMenu(false);
-      }
-    } else {
-      setShowSlashMenu(false);
+  // Slash command detection — ALL synchronous, no useEffect lag
+  const slashQuery = value.startsWith('/') && !value.includes(' ')
+    ? value.slice(1)
+    : null;
+
+  // Reset dismiss flag & selection index synchronously when query changes
+  if (slashQuery !== prevSlashQueryRef.current) {
+    prevSlashQueryRef.current = slashQuery;
+    if (slashQuery !== null) {
+      // Inline state resets — React allows setState during render if value differs
+      if (slashMenuDismissed) setSlashMenuDismissed(false);
+      if (slashIndex !== 0) setSlashIndex(0);
     }
-  }, [value]);
+  }
+
+  const showSlashMenu = slashQuery !== null && !slashMenuDismissed;
+
+  // Compute filtered & sorted commands inline — no useMemo caching issues
+  const slashCommands = showSlashMenu
+    ? filterCommands(slashQuery!, getMergedCommands(sessionCommands))
+    : [];
+
+  // Side-effect only: fetch commands from server if not cached
+  useEffect(() => {
+    if (slashQuery !== null && activeSessionId && !sessionCommands) {
+      wsRequestCompletions(activeSessionId);
+    }
+  }, [slashQuery, activeSessionId, sessionCommands]);
 
   const isPlanMode = activeSession?.permissionMode === 'readonly';
 
@@ -122,7 +130,7 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
       executeSlashCommand(cmd.name);
       setValue('');
     }
-    setShowSlashMenu(false);
+    setSlashMenuDismissed(true);
     textareaRef.current?.focus();
   };
 
@@ -162,7 +170,7 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
     if (trimmed.startsWith('/')) {
       executeSlashCommand(trimmed);
       setValue('');
-      setShowSlashMenu(false);
+      setSlashMenuDismissed(true);
       return;
     }
 
@@ -206,10 +214,9 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Slash menu navigation
     if (showSlashMenu) {
-      const commands = filterCommands(slashFilter, getMergedCommands(sessionCommands));
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSlashIndex((i) => Math.min(i + 1, commands.length - 1));
+        setSlashIndex((i) => Math.min(i + 1, slashCommands.length - 1));
         return;
       }
       if (e.key === 'ArrowUp') {
@@ -219,14 +226,14 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
         e.preventDefault();
-        if (commands[slashIndex]) {
-          handleSlashSelect(commands[slashIndex]);
+        if (slashCommands[slashIndex]) {
+          handleSlashSelect(slashCommands[slashIndex]);
         }
         return;
       }
       if (e.key === 'Escape') {
         e.preventDefault();
-        setShowSlashMenu(false);
+        setSlashMenuDismissed(true);
         return;
       }
     }
@@ -277,10 +284,9 @@ export default function MessageInput({ onSend, disabled, placeholder }: Props) {
       {/* Slash command menu */}
       {showSlashMenu && (
         <SlashCommandMenu
-          filter={slashFilter}
+          filteredCommands={slashCommands}
           selectedIndex={slashIndex}
           onSelect={handleSlashSelect}
-          commands={sessionCommands}
           loading={commandsLoading}
         />
       )}

@@ -23,45 +23,73 @@ const FALLBACK_COMMANDS: SlashCommand[] = [
 ];
 
 interface Props {
-  filter: string;
+  /** Pre-filtered & sorted command list — the component just renders it. */
+  filteredCommands: SlashCommand[];
   selectedIndex: number;
   onSelect: (cmd: SlashCommand) => void;
-  commands?: SlashCommand[];
   loading?: boolean;
 }
 
 export function filterCommands(input: string, commands: SlashCommand[]): SlashCommand[] {
   const query = input.toLowerCase();
   if (!query) return commands;
-  return commands.filter(
-    (cmd) =>
-      cmd.name.toLowerCase().includes(query) ||
-      cmd.description.toLowerCase().includes(query),
-  );
+
+  const scored: { cmd: SlashCommand; score: number }[] = [];
+  for (const cmd of commands) {
+    const name = cmd.name.toLowerCase();
+    if (name === query || name === '/' + query) {
+      // Exact match (highest priority)
+      scored.push({ cmd, score: -1 });
+    } else {
+      const nameIdx = name.indexOf(query);
+      if (nameIdx !== -1) {
+        // Name partial match → 0..99, earlier position = lower score = higher priority
+        scored.push({ cmd, score: nameIdx });
+      } else if (cmd.description.toLowerCase().includes(query)) {
+        // Description-only match (lowest priority)
+        scored.push({ cmd, score: 1000 });
+      }
+    }
+  }
+
+  scored.sort((a, b) => a.score - b.score);
+  return scored.map((s) => s.cmd);
 }
 
 /**
  * Merge adapter commands with lobby-level fallback commands.
  * Adapter commands take precedence when names conflict.
+ * Deduplicates by name — first occurrence wins.
  */
 export function getMergedCommands(adapterCommands?: SlashCommand[]): SlashCommand[] {
   const adapterCmds = adapterCommands && adapterCommands.length > 0 ? adapterCommands : [];
-  const adapterNames = new Set(adapterCmds.map((c) => c.name));
-  const lobbyOnly = FALLBACK_COMMANDS.filter((c) => !adapterNames.has(c.name));
-  return [...adapterCmds, ...lobbyOnly];
+  const seen = new Set<string>();
+  const result: SlashCommand[] = [];
+  for (const cmd of [...adapterCmds, ...FALLBACK_COMMANDS]) {
+    if (!seen.has(cmd.name)) {
+      seen.add(cmd.name);
+      result.push(cmd);
+    }
+  }
+  return result;
 }
 
-export default function SlashCommandMenu({ filter, selectedIndex, onSelect, commands, loading }: Props) {
-  const list = getMergedCommands(commands);
-  const filtered = filterCommands(filter, list);
+export default function SlashCommandMenu({ filteredCommands, selectedIndex, onSelect, loading }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
 
+  // DEBUG: log what the component actually receives vs what DOM shows
+  console.log('[SlashMenu] props.filteredCommands:', filteredCommands.map(c => c.name));
+
   useEffect(() => {
+    // DEBUG: log actual DOM children count after render
+    const domChildren = listRef.current?.querySelectorAll('button');
+    console.log('[SlashMenu] DOM button count:', domChildren?.length, 'vs props count:', filteredCommands.length);
+
     const el = listRef.current?.children[selectedIndex + 1] as HTMLElement | undefined;
     el?.scrollIntoView({ block: 'nearest' });
-  }, [selectedIndex]);
+  }, [selectedIndex, filteredCommands]);
 
-  if (filtered.length === 0) return null;
+  if (filteredCommands.length === 0) return null;
 
   return (
     <div
@@ -70,7 +98,7 @@ export default function SlashCommandMenu({ filter, selectedIndex, onSelect, comm
     >
       {/* Header with count and loading indicator */}
       <div className="sticky top-0 px-3 py-1 bg-gray-900/95 border-b border-gray-800 flex items-center justify-between text-[10px] text-gray-500">
-        <span>{filtered.length} commands</span>
+        <span>{filteredCommands.length} commands</span>
         {loading && (
           <span className="flex items-center gap-1 text-blue-400">
             <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
@@ -78,7 +106,7 @@ export default function SlashCommandMenu({ filter, selectedIndex, onSelect, comm
           </span>
         )}
       </div>
-      {filtered.map((cmd, i) => (
+      {filteredCommands.map((cmd, i) => (
         <button
           key={cmd.name}
           className={`w-full text-left px-3 py-1.5 flex items-center gap-2 text-sm transition-colors ${
