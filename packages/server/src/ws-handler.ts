@@ -491,6 +491,16 @@ export function handleWebSocket(
           break;
         }
 
+        case 'session.pin': {
+          sessionManager.pinSession(data.sessionId, data.pinned);
+          break;
+        }
+
+        case 'session.rename': {
+          sessionManager.renameSession(data.sessionId, data.displayName);
+          break;
+        }
+
         case 'compact': {
           const compactSessionId = data.sessionId as string;
           const instructions = (data as { instructions?: string }).instructions ?? '';
