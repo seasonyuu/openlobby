@@ -849,14 +849,29 @@ export class SessionManager {
     return summary;
   }
 
-  renameSession(sessionId: string, newName: string): void {
+  pinSession(sessionId: string, pinned: boolean): void {
+    // Write DB first for crash safety
+    if (this.db) {
+      updateSessionPinned(this.db, sessionId, pinned);
+    }
+    // Update in-memory session if active
     const session = this.sessions.get(sessionId);
     if (session) {
-      session.displayName = newName;
+      session.pinned = pinned;
       this.broadcastSessionUpdate(session);
     }
+  }
+
+  renameSession(sessionId: string, displayName: string): void {
+    // Write DB first for crash safety
     if (this.db) {
-      updateSessionDisplayName(this.db, sessionId, newName);
+      updateSessionDisplayName(this.db, sessionId, displayName);
+    }
+    // Update in-memory session if active
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.displayName = displayName;
+      this.broadcastSessionUpdate(session);
     }
   }
 
