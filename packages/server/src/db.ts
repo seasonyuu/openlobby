@@ -17,6 +17,7 @@ export interface SessionRow {
   tags: string | null;
   permission_mode: string | null;
   message_mode: string | null;
+  pinned: number;
 }
 
 export function initDb(dbPath?: string): Database.Database {
@@ -133,15 +134,22 @@ export function initDb(dbPath?: string): Database.Database {
     // Column already exists — ignore
   }
 
+  // Migration: add pinned column if not exists
+  try {
+    db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+  } catch {
+    // Column already exists — ignore
+  }
+
   return db;
 }
 
 export function upsertSession(db: Database.Database, row: SessionRow): void {
   db.prepare(`
     INSERT OR REPLACE INTO sessions
-      (id, adapter_name, display_name, cwd, jsonl_path, origin, status, created_at, last_active_at, model, tags, permission_mode, message_mode)
+      (id, adapter_name, display_name, cwd, jsonl_path, origin, status, created_at, last_active_at, model, tags, permission_mode, message_mode, pinned)
     VALUES
-      (@id, @adapter_name, @display_name, @cwd, @jsonl_path, @origin, @status, @created_at, @last_active_at, @model, @tags, @permission_mode, @message_mode)
+      (@id, @adapter_name, @display_name, @cwd, @jsonl_path, @origin, @status, @created_at, @last_active_at, @model, @tags, @permission_mode, @message_mode, @pinned)
   `).run(row);
 }
 
@@ -176,6 +184,14 @@ export function updateSessionDisplayName(
   displayName: string,
 ): void {
   db.prepare('UPDATE sessions SET display_name = ? WHERE id = ?').run(displayName, id);
+}
+
+export function updateSessionPinned(
+  db: Database.Database,
+  id: string,
+  pinned: boolean,
+): void {
+  db.prepare('UPDATE sessions SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id);
 }
 
 export function updateSessionStatus(
