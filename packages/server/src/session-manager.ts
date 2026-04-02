@@ -16,6 +16,7 @@ import {
   deleteSession as dbDeleteSession,
   updateSessionStatus,
   updateSessionDisplayName,
+  updateSessionPinned,
   getAllSessions,
   getSessionCommands,
   upsertSessionCommands,
@@ -42,6 +43,8 @@ export interface ManagedSession {
   lastMessage?: string;
   origin: 'lobby' | 'cli' | 'lobby-manager';
   messageMode: MessageMode;
+  /** Whether this session is pinned to the top of the sidebar */
+  pinned: boolean;
   /** Cumulative token usage for compact threshold tracking */
   tokenUsage: {
     inputTokens: number;
@@ -223,6 +226,7 @@ export class SessionManager {
       cwd: s.cwd,
       origin: s.origin,
       messageMode: s.messageMode,
+      pinned: s.pinned,
       resumeCommand: this.buildResumeCommand(s),
     };
   }
@@ -470,6 +474,7 @@ export class SessionManager {
       tags: null,
       permission_mode: session.permissionMode ?? null,
       message_mode: session.messageMode,
+      pinned: session.pinned ? 1 : 0,
     });
   }
 
@@ -503,6 +508,7 @@ export class SessionManager {
       permissionMode: options.permissionMode,
       origin,
       messageMode: (options as any).messageMode ?? (this.db ? (getServerConfig(this.db, 'defaultMessageMode') as MessageMode | undefined) : undefined) ?? 'msg-tidy',
+      pinned: false,
       tokenUsage: {
         inputTokens: 0,
         outputTokens: 0,
@@ -549,6 +555,7 @@ export class SessionManager {
       permissionMode: options.permissionMode,
       origin,
       messageMode: (options as any).messageMode ?? 'msg-tidy',
+      pinned: false,
       tokenUsage: {
         inputTokens: 0,
         outputTokens: 0,
@@ -642,6 +649,7 @@ export class SessionManager {
       permissionMode: sessionPermission ?? undefined,
       origin: row.origin as 'lobby' | 'cli' | 'lobby-manager',
       messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
+      pinned: row.pinned === 1,
       tokenUsage: {
         inputTokens: 0,
         outputTokens: 0,
@@ -736,6 +744,7 @@ export class SessionManager {
           messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
           resumeCommand: resumeCmd,
           jsonlPath: row.jsonl_path ?? undefined,
+          pinned: row.pinned === 1,
         });
       }
     }
@@ -810,6 +819,7 @@ export class SessionManager {
         tags: null,
         permission_mode: null,
         message_mode: null,
+        pinned: 0,
       });
     }
 
@@ -951,6 +961,7 @@ export class SessionManager {
           permissionMode: (row.permission_mode as PermissionMode | null) ?? undefined,
           origin: row.origin as 'lobby' | 'cli' | 'lobby-manager',
           messageMode: (row.message_mode as MessageMode) ?? 'msg-tidy',
+          pinned: row.pinned === 1,
           tokenUsage: {
             inputTokens: 0,
             outputTokens: 0,
