@@ -71,7 +71,7 @@ function SessionCard({
         isActive
           ? 'bg-gray-700 border-l-2 border-blue-400'
           : isPinned
-            ? 'bg-gray-800/60 hover:bg-gray-800'
+            ? 'bg-blue-950/40 hover:bg-blue-900/40 border-l-2 border-blue-500/50'
             : 'hover:bg-gray-800'
       } ${
         isAwaiting
