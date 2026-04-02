@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useLobbyStore } from '../stores/lobby-store';
 import type { SessionSummaryData } from '../stores/lobby-store';
-import { wsRequestSessionHistory, wsDiscoverSessions } from '../hooks/useWebSocket';
+import { wsRequestSessionHistory, wsDiscoverSessions, wsPinSession, wsRenameSession } from '../hooks/useWebSocket';
 // NewSessionDialog removed — Lobby Manager handles session creation
 import DiscoverDialog from './DiscoverDialog';
 import ChannelManagePanel from './ChannelManagePanel';
@@ -33,27 +33,87 @@ function SessionCard({
   session,
   isActive,
   onClick,
+  onPin,
+  onRename,
 }: {
   session: SessionSummaryData;
   isActive: boolean;
   onClick: () => void;
+  onPin: (pinned: boolean) => void;
+  onRename: (name: string) => void;
 }) {
   const config = statusConfig[session.status] ?? statusConfig.idle;
   const isAwaiting = session.status === 'awaiting_approval';
+  const isPinned = session.pinned ?? false;
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState(session.displayName);
+  const [isHovered, setIsHovered] = useState(false);
+
+  const handleRenameConfirm = () => {
+    const trimmed = editName.trim();
+    if (trimmed && trimmed !== session.displayName) {
+      onRename(trimmed);
+    }
+    setIsEditing(false);
+  };
+
+  const handleRenameCancel = () => {
+    setEditName(session.displayName);
+    setIsEditing(false);
+  };
 
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors ${
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors relative ${
         isActive
           ? 'bg-gray-700 border-l-2 border-blue-400'
-          : 'hover:bg-gray-800'
+          : isPinned
+            ? 'bg-gray-800/60 hover:bg-gray-800'
+            : 'hover:bg-gray-800'
       } ${
         isAwaiting
           ? 'bg-orange-900/30 border-l-2 border-orange-400 ring-1 ring-orange-500/30'
           : ''
       }`}
     >
+      {/* Action buttons */}
+      {(isHovered || isPinned) && !isEditing && (
+        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 z-10">
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onPin(!isPinned);
+            }}
+            className={`p-0.5 rounded text-xs cursor-pointer transition-colors ${
+              isPinned
+                ? 'text-blue-400 hover:text-blue-300'
+                : isHovered
+                  ? 'text-gray-500 hover:text-gray-300'
+                  : 'hidden'
+            }`}
+            title={isPinned ? 'Unpin' : 'Pin to top'}
+          >
+            📌
+          </span>
+          {isHovered && (
+            <span
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditName(session.displayName);
+                setIsEditing(true);
+              }}
+              className="p-0.5 rounded text-xs text-gray-500 hover:text-gray-300 cursor-pointer transition-colors"
+              title="Rename"
+            >
+              ✏️
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="flex items-center gap-2 mb-1">
         <span
           className={`inline-block w-2 h-2 rounded-full ${config.color} ${
@@ -61,9 +121,24 @@ function SessionCard({
           }`}
           title={config.label}
         />
-        <span className="text-sm font-medium text-gray-100 truncate flex-1">
-          {session.displayName}
-        </span>
+        {isEditing ? (
+          <input
+            autoFocus
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameConfirm();
+              if (e.key === 'Escape') handleRenameCancel();
+            }}
+            onBlur={handleRenameConfirm}
+            onClick={(e) => e.stopPropagation()}
+            className="text-sm font-medium text-gray-100 bg-gray-600 border border-gray-500 rounded px-1 py-0 flex-1 outline-none focus:border-blue-400"
+          />
+        ) : (
+          <span className="text-sm font-medium text-gray-100 truncate flex-1">
+            {session.displayName}
+          </span>
+        )}
         {isAwaiting ? (
           <span className="text-[10px] text-orange-300 bg-orange-500/20 px-1.5 py-0.5 rounded font-medium animate-pulse">
             Approval
@@ -109,7 +184,14 @@ export default function Sidebar() {
   // Filter out the Lobby Manager session from the regular list
   const sortedSessions = Object.values(sessions)
     .filter((s) => s.origin !== 'lobby-manager')
-    .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+    .sort((a, b) => {
+      // Pinned sessions first
+      const aPinned = a.pinned ? 1 : 0;
+      const bPinned = b.pinned ? 1 : 0;
+      if (bPinned !== aPinned) return bPinned - aPinned;
+      // Then by last active time
+      return b.lastActiveAt - a.lastActiveAt;
+    });
 
   const handleSelectSession = (id: string) => {
     setActiveSession(id);
@@ -147,6 +229,14 @@ export default function Sidebar() {
               session={session}
               isActive={activeSessionId === session.id}
               onClick={() => handleSelectSession(session.id)}
+              onPin={(pinned) => {
+                useLobbyStore.getState().updateSession({ ...session, pinned });
+                wsPinSession(session.id, pinned);
+              }}
+              onRename={(name) => {
+                useLobbyStore.getState().updateSession({ ...session, displayName: name });
+                wsRenameSession(session.id, name);
+              }}
             />
           ))}
         </div>
