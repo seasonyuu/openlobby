@@ -1358,14 +1358,21 @@ export class ChannelRouterImpl implements ChannelRouter {
     const adapterLabel = info?.adapterName ?? 'CLI';
 
     if (adapterCommands && adapterCommands.length > 0) {
+      // Deduplicate: adapter commands that overlap with OpenLobby built-in
+      // commands are excluded to prevent Telegram setMyCommands rejection
+      const builtinNames = new Set(lobbyGroup.commands.map(c => c.command));
       const adapterGroup: CommandGroup = {
         label: adapterLabel,
-        commands: adapterCommands.map(c => ({
-          command: c.name.replace(/^\//, '').replace(/-/g, '_'),
-          description: c.description ?? '',
-        })),
+        commands: adapterCommands
+          .map(c => ({
+            command: c.name.replace(/^\//, '').replace(/-/g, '_'),
+            description: c.description ?? '',
+          }))
+          .filter(c => !builtinNames.has(c.command)),
       };
-      return [lobbyGroup, adapterGroup];
+      if (adapterGroup.commands.length > 0) {
+        return [lobbyGroup, adapterGroup];
+      }
     }
 
     return [lobbyGroup];

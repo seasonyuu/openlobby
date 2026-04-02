@@ -73,7 +73,7 @@ export class TelegramBotProvider implements ChannelProvider {
 
   private log(level: 'info' | 'warn' | 'error', ...args: unknown[]) {
     const prefix = `[Telegram:${this.accountId}]`;
-    const line = `${new Date().toISOString()} ${level} ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`;
+    const line = `${new Date().toISOString()} ${level} ${args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.message : JSON.stringify(a))).join(' ')}`;
     this.debugLogs.push(line);
     if (this.debugLogs.length > this.maxDebugLogs) this.debugLogs.shift();
     if (level === 'error') console.error(prefix, ...args);
@@ -215,24 +215,55 @@ export class TelegramBotProvider implements ChannelProvider {
   }
 
   async syncCommands(peerId: string, groups: CommandGroup[]): Promise<void> {
+    // Telegram setMyCommands constraints:
+    //   - Max 100 commands per scope
+    //   - Total payload (command names + descriptions) capped at ~6400 chars
+    // Strategy: dedup → truncate count → dynamically cap descriptions to fit budget.
+    const MAX_COMMANDS = 100;
+    const PAYLOAD_BUDGET = 6000; // conservative; real limit is ~6400
+
+    // 1. Normalize, dedup by command name (first occurrence wins)
+    const seen = new Set<string>();
     const commands = groups.flatMap(g =>
       g.commands.map((c: { command: string; description: string }) => ({
-        // Telegram: only lowercase a-z, 0-9, underscore; 1-32 chars
         command: c.command.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 32),
-        // Telegram requires description 1-256 chars; fallback to command name if empty
         description: (c.description || `/${c.command}`).slice(0, 256),
       }))
-    ).filter(c => /^[a-z][a-z0-9_]{0,31}$/.test(c.command));
+    ).filter(c => {
+      if (!/^[a-z][a-z0-9_]{0,31}$/.test(c.command)) return false;
+      if (seen.has(c.command)) return false;
+      seen.add(c.command);
+      return true;
+    });
 
     if (commands.length === 0) return;
 
+    // 2. Truncate to max count
+    const truncated = commands.slice(0, MAX_COMMANDS);
+
+    // 3. Dynamically cap descriptions to fit within payload budget
+    const nameChars = truncated.reduce((s, c) => s + c.command.length, 0);
+    const descBudget = PAYLOAD_BUDGET - nameChars;
+    const descTotal = truncated.reduce((s, c) => s + c.description.length, 0);
+
+    if (descTotal > descBudget) {
+      // Uniform cap per description to stay within budget
+      const maxDesc = Math.max(1, Math.floor(descBudget / truncated.length));
+      for (const c of truncated) {
+        if (c.description.length > maxDesc) {
+          c.description = c.description.slice(0, maxDesc);
+        }
+      }
+      this.log('info', `Capped descriptions to ${maxDesc} chars to fit payload budget`);
+    }
+
     try {
-      await this.api.setMyCommands(commands, {
+      await this.api.setMyCommands(truncated, {
         scope: { type: 'chat', chat_id: Number(peerId) },
       });
-      this.log('info', `Synced ${commands.length} commands for chat ${peerId}`);
+      this.log('info', `Synced ${truncated.length} commands for chat ${peerId}`);
     } catch (err) {
-      this.log('error', `syncCommands error for chat ${peerId} (${commands.length} cmds):`, err);
+      this.log('error', `syncCommands error for chat ${peerId} (${truncated.length} cmds):`, err);
     }
   }
 
