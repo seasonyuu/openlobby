@@ -374,6 +374,10 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
       }
       if (resumeId) {
         queryOpts.resume = resumeId;
+      } else {
+        // Explicitly prevent auto-continuing the most recent session in the CWD.
+        // Without this, SDK may implicitly continue the previous conversation.
+        queryOpts.continue = false;
       }
 
       console.log('[ClaudeCode] Starting query:', {
