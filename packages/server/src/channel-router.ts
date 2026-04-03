@@ -1245,26 +1245,19 @@ export class ChannelRouterImpl implements ChannelRouter {
       }
     }
 
-    // When a session enters error/stopped state, reset bindings that point to it
-    // so the user falls back to Lobby Manager on next message
+    // When a session enters error/stopped state, keep binding intact and send retry button
     if (session.status === 'error' || session.status === 'stopped') {
       const bindings = getAllBindingsBySession(this.db, session.id);
       for (const binding of bindings) {
-        // Only reset if this was a LM-routed binding (not a manually bound one)
-        if (binding.target === 'lobby-manager') {
-          updateBindingActiveSession(this.db, binding.identity_key, null);
-          this.lastSenderBySession.delete(session.id);
-          console.log(`[ChannelRouter] Reset binding ${binding.identity_key} (session ${session.id} → ${session.status})`);
-
-          // Notify user
-          const provider = this.providers.get(`${binding.channel_name}:${binding.account_id}`);
-          if (provider) {
-            provider.sendMessage({
-              identity: { channelName: binding.channel_name, accountId: binding.account_id, peerId: binding.peer_id },
-              text: `⚠️ 会话异常 (${session.status})，已切换回 Lobby Manager。`,
-              kind: 'message',
-            }).catch(() => {});
-          }
+        const provider = this.providers.get(`${binding.channel_name}:${binding.account_id}`);
+        if (provider) {
+          console.log(`[ChannelRouter] Session ${session.id} → ${session.status}, sending retry button to ${binding.identity_key}`);
+          provider.sendMessage({
+            identity: { channelName: binding.channel_name, accountId: binding.account_id, peerId: binding.peer_id },
+            text: `⚠️ 会话异常 (${session.status})，任务可能已中断。`,
+            kind: 'message',
+            actions: [{ label: '🔄 重试/继续', callbackData: `resume:${session.id}` }],
+          }).catch(() => {});
         }
       }
     }
