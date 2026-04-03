@@ -46,6 +46,30 @@ function openViaAppleScript(appName: string, resumeCmd: string, doCommand: strin
   return { ok: true, terminal: appName };
 }
 
+/**
+ * iTerm2-specific: create a window with a normal shell, then `write text` to execute the command.
+ * Unlike `create window with default profile command X` which replaces the shell with the command
+ * process (leaving a blank window if the command exits), this keeps the shell alive.
+ */
+function openItermViaAppleScript(resumeCmd: string): OpenResult {
+  const script = [
+    'on run argv',
+    '  tell application "iTerm"',
+    '    set newWindow to (create window with default profile)',
+    '    tell current session of newWindow',
+    '      write text (item 1 of argv)',
+    '    end tell',
+    '    activate',
+    '  end tell',
+    'end run',
+  ].join('\n');
+  const result = spawnSync('osascript', ['-', resumeCmd], { input: script, timeout: 5000 });
+  if (result.status !== 0) {
+    return { ok: false, resumeCommand: resumeCmd, reason: `osascript failed: ${result.stderr?.toString()?.trim() ?? 'unknown error'}` };
+  }
+  return { ok: true, terminal: 'iTerm2' };
+}
+
 function openViaCli(terminalName: string, argv: string[], resumeCmd: string): OpenResult {
   try {
     const [cmd, ...args] = argv;
@@ -66,7 +90,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['iTerm.app', 'iTerm2.app'],
     platforms: ['darwin'],
     verifyBinary: null,
-    open: (cmd) => openViaAppleScript('iTerm', cmd, 'create window with default profile command (item 1 of argv)'),
+    open: (cmd) => openItermViaAppleScript(cmd),
   },
   {
     id: 'terminal-app',
