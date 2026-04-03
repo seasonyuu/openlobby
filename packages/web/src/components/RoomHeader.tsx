@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useLobbyStore } from '../stores/lobby-store';
-import { wsDestroySession, wsConfigureSession, wsCompactSession, wsOpenTerminal } from '../hooks/useWebSocket';
+import { wsDestroySession, wsConfigureSession, wsOpenTerminal } from '../hooks/useWebSocket';
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -30,9 +30,6 @@ export default function RoomHeader() {
   const isLM = session?.origin === 'lobby-manager';
   const adapterMeta = useLobbyStore((s) => s.adapterPermissionMeta);
   const adapterDefaults = useLobbyStore((s) => s.adapterDefaults);
-  const sessionCommands = useLobbyStore((s) =>
-    s.activeSessionId ? s.commandsBySession[s.activeSessionId] : undefined,
-  );
   const terminalFailDialog = useLobbyStore((s) => s.terminalFailDialog);
   const setTerminalFailDialog = useLobbyStore((s) => s.setTerminalFailDialog);
   const [showSettings, setShowSettings] = useState(false);
@@ -128,22 +125,6 @@ export default function RoomHeader() {
       </div>
 
       <div className="flex items-center gap-2">
-        {(() => {
-          const hasCompactCmd = sessionCommands?.some((c) => c.name === '/compact');
-          const adapterSupports = session.adapterName === 'claude-code' || session.adapterName === 'opencode';
-          if (!hasCompactCmd && !adapterSupports) return null;
-          return (
-            <button
-              onClick={() => wsCompactSession(activeSessionId)}
-              title="Compact conversation"
-              className="p-1.5 rounded hover:bg-gray-700 text-gray-400 hover:text-gray-200 transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M5.293 9.707a1 1 0 010-1.414L8.586 5H4a1 1 0 110-2h7a1 1 0 011 1v7a1 1 0 11-2 0V6.414l-3.293 3.293a1 1 0 01-1.414 0zM14.707 10.293a1 1 0 010 1.414L11.414 15H16a1 1 0 110 2H9a1 1 0 01-1-1v-7a1 1 0 112 0v4.586l3.293-3.293a1 1 0 011.414 0z" clipRule="evenodd" />
-              </svg>
-            </button>
-          );
-        })()}
         {session.resumeCommand && (
           <button
             onClick={handleOpenTerminal}

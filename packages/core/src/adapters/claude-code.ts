@@ -217,6 +217,12 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
   private abortController = new AbortController();
   /** Accumulated stderr output from the CLI subprocess for error diagnostics */
   private stderrChunks: string[] = [];
+  /** Number of consecutive exit-code-1 failures (for retry logic) */
+  private consecutiveStartupFailures = 0;
+  /** Maximum retries for transient CLI startup failures */
+  private static readonly MAX_STARTUP_RETRIES = 1;
+  /** Delay (ms) before retry to allow transient conditions to clear */
+  private static readonly RETRY_DELAY_MS = 2000;
 
   constructor(sessionId: string, options: ClaudeCodeSpawnOptions, private claudeCliPath?: string) {
     super();
@@ -254,6 +260,12 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
       if (this.spawnOptions.apiKey) {
         subprocessEnv.ANTHROPIC_API_KEY = this.spawnOptions.apiKey;
       }
+
+      // Enable SDK debug mode to capture detailed diagnostics via stderr.
+      // When the CLI exits with code 1 before producing any output, this
+      // flag causes --debug-to-stderr to be passed, giving us the CLI's
+      // internal logs for root-cause analysis (e.g. auth failures).
+      subprocessEnv.DEBUG_CLAUDE_AGENT_SDK = '1';
 
       // Reset stderr buffer for this query
       this.stderrChunks = [];
@@ -414,6 +426,7 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
         }
       }
 
+      this.consecutiveStartupFailures = 0; // Reset on success
       this.status = 'idle';
       console.log('[ClaudeCode] Query completed');
       this.emit('idle');
@@ -422,10 +435,32 @@ class ClaudeCodeProcess extends EventEmitter implements AgentProcess {
       console.error('[ClaudeCode] === QUERY FAILED ===');
       console.error('[ClaudeCode] error:', err);
       if (stderrOutput) console.error('[ClaudeCode] stderr:\n' + stderrOutput);
+
+      const baseError = err instanceof Error ? err.message : String(err);
+      const isStartupFailure = baseError.includes('process exited with code 1');
+
+      // Auto-retry transient startup failures (e.g. OAuth token refresh race).
+      // Only retry for exit-code-1 with no meaningful stderr (indicates the CLI
+      // failed before initializing, not a permanent configuration error).
+      if (isStartupFailure && !resumeId && this.consecutiveStartupFailures < ClaudeCodeProcess.MAX_STARTUP_RETRIES) {
+        this.consecutiveStartupFailures++;
+        console.warn(`[ClaudeCode] Startup failure #${this.consecutiveStartupFailures}, retrying in ${ClaudeCodeProcess.RETRY_DELAY_MS}ms...`);
+        this.status = 'running'; // keep status as running during retry
+        const retryMsg = makeLobbyMessage(
+          this.sessionId,
+          'system',
+          { info: `CLI startup failed (exit code 1), retrying... (attempt ${this.consecutiveStartupFailures + 1})` },
+        );
+        this.emit('message', retryMsg);
+        await new Promise(resolve => setTimeout(resolve, ClaudeCodeProcess.RETRY_DELAY_MS));
+        if (!this.abortController.signal.aborted) {
+          return this.runQuery(prompt, resumeId);
+        }
+      }
+
       this.status = 'error';
 
       // Include stderr + diagnostics in error message for frontend visibility
-      const baseError = err instanceof Error ? err.message : String(err);
       const fullError = stderrOutput
         ? `${baseError}\n--- CLI stderr ---\n${stderrOutput.slice(0, 2000)}`
         : baseError;
