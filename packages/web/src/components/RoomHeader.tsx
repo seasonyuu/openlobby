@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useLobbyStore } from '../stores/lobby-store';
-import { wsDestroySession, wsConfigureSession, wsCompactSession } from '../hooks/useWebSocket';
+import { wsDestroySession, wsConfigureSession, wsCompactSession, wsOpenTerminal } from '../hooks/useWebSocket';
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -33,6 +33,8 @@ export default function RoomHeader() {
   const sessionCommands = useLobbyStore((s) =>
     s.activeSessionId ? s.commandsBySession[s.activeSessionId] : undefined,
   );
+  const terminalFailDialog = useLobbyStore((s) => s.terminalFailDialog);
+  const setTerminalFailDialog = useLobbyStore((s) => s.setTerminalFailDialog);
   const [showSettings, setShowSettings] = useState(false);
   const [showDestroyConfirm, setShowDestroyConfirm] = useState(false);
   const [model, setModel] = useState('');
@@ -49,6 +51,12 @@ export default function RoomHeader() {
     wsDestroySession(activeSessionId);
     setShowDestroyConfirm(false);
     setShowSettings(false);
+  };
+
+  const handleOpenTerminal = () => {
+    if (activeSessionId) {
+      wsOpenTerminal(activeSessionId);
+    }
   };
 
   const handleCopyResumeCmd = () => {
@@ -138,9 +146,13 @@ export default function RoomHeader() {
         })()}
         {session.resumeCommand && (
           <button
-            onClick={handleCopyResumeCmd}
+            onClick={handleOpenTerminal}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              handleCopyResumeCmd();
+            }}
             className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1 rounded hover:bg-gray-800"
-            title={`Copy: ${session.resumeCommand}`}
+            title={`Click to open in terminal | Right-click to copy: ${session.resumeCommand}`}
           >
             Resume Cmd
           </button>
@@ -262,6 +274,41 @@ export default function RoomHeader() {
                 className="px-3 py-1.5 text-xs rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium"
               >
                 Remove
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {terminalFailDialog && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-xl w-[480px] border border-gray-600 shadow-2xl p-5">
+            <h3 className="text-sm font-semibold text-yellow-400 mb-2">
+              Unable to open terminal automatically
+            </h3>
+            <p className="text-xs text-gray-400 mb-3">
+              {terminalFailDialog.reason}
+            </p>
+            <p className="text-xs text-gray-400 mb-2">
+              Please run the following command manually:
+            </p>
+            <div className="bg-gray-900 rounded-lg p-3 mb-3 font-mono text-xs text-gray-200 break-all select-all">
+              {terminalFailDialog.resumeCommand}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(terminalFailDialog.resumeCommand);
+                }}
+                className="px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium"
+              >
+                Copy Command
+              </button>
+              <button
+                onClick={() => setTerminalFailDialog(null)}
+                className="px-3 py-1.5 text-xs rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300"
+              >
+                Close
               </button>
             </div>
           </div>

@@ -145,6 +145,9 @@ interface LobbyState {
     error?: string;
   };
   setWecomQrStatus: (status: LobbyState['wecomQrStatus']) => void;
+
+  terminalFailDialog: { resumeCommand: string; reason: string } | null;
+  setTerminalFailDialog: (dialog: { resumeCommand: string; reason: string } | null) => void;
 }
 
 // Track seen message IDs per session for deduplication
@@ -424,6 +427,9 @@ export const useLobbyStore = create<LobbyState>((set) => ({
 
   wecomQrStatus: null,
   setWecomQrStatus: (status) => set({ wecomQrStatus: status }),
+
+  terminalFailDialog: null,
+  setTerminalFailDialog: (dialog) => set({ terminalFailDialog: dialog }),
 
   setSessionCommands: (sessionId, commands, cached) =>
     set((state) => ({

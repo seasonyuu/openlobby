@@ -260,6 +260,14 @@ function ensureConnection(url: string) {
         break;
       }
 
+      case 'session.open-terminal-result': {
+        if (!(data as any).ok) {
+          const { resumeCommand, reason } = data as any;
+          useLobbyStore.getState().setTerminalFailDialog({ resumeCommand, reason });
+        }
+        break;
+      }
+
       case 'error':
         console.error('[WS] Server error:', data.error);
         break;
@@ -411,6 +419,10 @@ export function wsPinSession(sessionId: string, pinned: boolean): void {
 
 export function wsRenameSession(sessionId: string, displayName: string): void {
   wsSend({ type: 'session.rename', sessionId, displayName });
+}
+
+export function wsOpenTerminal(sessionId: string): void {
+  wsSend({ type: 'session.open-terminal', sessionId });
 }
 
 export function wsRequestCompletions(sessionId: string): void {
