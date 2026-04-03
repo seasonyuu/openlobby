@@ -1,4 +1,3 @@
-// packages/server/src/terminal-detector.ts
 import { spawnSync, spawn } from 'node:child_process';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -27,7 +26,7 @@ interface TerminalEntry {
 
 function verifyBinaryExists(binary: string): boolean {
   const cmd = process.platform === 'win32' ? 'where' : 'which';
-  const result = spawnSync(cmd, [binary], { stdio: 'ignore' });
+  const result = spawnSync(cmd, [binary], { stdio: 'ignore', timeout: 5000 });
   return result.status === 0;
 }
 
@@ -40,20 +39,20 @@ function openViaAppleScript(appName: string, resumeCmd: string, doCommand: strin
     '  end tell',
     'end run',
   ].join('\n');
-  const result = spawnSync('osascript', ['-', resumeCmd], { input: script });
+  const result = spawnSync('osascript', ['-', resumeCmd], { input: script, timeout: 5000 });
   if (result.status !== 0) {
     return { ok: false, resumeCommand: resumeCmd, reason: `osascript failed: ${result.stderr?.toString()?.trim() ?? 'unknown error'}` };
   }
   return { ok: true, terminal: appName };
 }
 
-function openViaCli(terminalName: string, argv: string[]): OpenResult {
+function openViaCli(terminalName: string, argv: string[], resumeCmd: string): OpenResult {
   try {
     const [cmd, ...args] = argv;
     spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
     return { ok: true, terminal: terminalName };
   } catch (err) {
-    return { ok: false, resumeCommand: '', reason: `Failed to spawn ${terminalName}: ${err instanceof Error ? err.message : String(err)}` };
+    return { ok: false, resumeCommand: resumeCmd, reason: `Failed to spawn ${terminalName}: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -84,7 +83,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['ghostty'],
     platforms: ['darwin', 'linux'],
     verifyBinary: 'ghostty',
-    open: (cmd) => openViaCli('ghostty', ['ghostty', '-e', 'bash', '-c', `${cmd}; exec bash`]),
+    open: (cmd) => openViaCli('ghostty', ['ghostty', '-e', 'bash', '-c', `${cmd}; exec bash`], cmd),
   },
   {
     id: 'kitty',
@@ -92,7 +91,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['kitty'],
     platforms: ['darwin', 'linux'],
     verifyBinary: 'kitty',
-    open: (cmd) => openViaCli('kitty', ['kitty', 'bash', '-c', `${cmd}; exec bash`]),
+    open: (cmd) => openViaCli('kitty', ['kitty', 'bash', '-c', `${cmd}; exec bash`], cmd),
   },
   {
     id: 'alacritty',
@@ -100,7 +99,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['Alacritty'],
     platforms: ['darwin', 'linux'],
     verifyBinary: 'alacritty',
-    open: (cmd) => openViaCli('alacritty', ['alacritty', '-e', 'bash', '-c', `${cmd}; exec bash`]),
+    open: (cmd) => openViaCli('alacritty', ['alacritty', '-e', 'bash', '-c', `${cmd}; exec bash`], cmd),
   },
   {
     id: 'warp',
@@ -108,7 +107,8 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['WarpTerminal'],
     platforms: ['darwin'],
     verifyBinary: null,
-    open: (cmd) => openViaCli('warp', ['open', '-a', 'Warp']),
+    // Warp doesn't support direct command injection on open; best effort — just opens the app
+    open: (cmd) => openViaCli('warp', ['open', '-a', 'Warp'], cmd),
   },
   // Linux terminals
   {
@@ -117,7 +117,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['gnome-terminal-server'],
     platforms: ['linux'],
     verifyBinary: 'gnome-terminal',
-    open: (cmd) => openViaCli('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', `${cmd}; exec bash`]),
+    open: (cmd) => openViaCli('gnome-terminal', ['gnome-terminal', '--', 'bash', '-c', `${cmd}; exec bash`], cmd),
   },
   {
     id: 'konsole',
@@ -125,7 +125,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['konsole'],
     platforms: ['linux'],
     verifyBinary: 'konsole',
-    open: (cmd) => openViaCli('konsole', ['konsole', '-e', 'bash', '-c', `${cmd}; exec bash`]),
+    open: (cmd) => openViaCli('konsole', ['konsole', '-e', 'bash', '-c', `${cmd}; exec bash`], cmd),
   },
   {
     id: 'xfce4-terminal',
@@ -133,7 +133,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['xfce4-terminal'],
     platforms: ['linux'],
     verifyBinary: 'xfce4-terminal',
-    open: (cmd) => openViaCli('xfce4-terminal', ['xfce4-terminal', '-e', `bash -c '${cmd}; exec bash'`]),
+    open: (cmd) => openViaCli('xfce4-terminal', ['xfce4-terminal', '-e', 'bash', '-c', `${cmd}; exec bash`], cmd),
   },
   // Windows
   {
@@ -142,7 +142,7 @@ const TERMINAL_REGISTRY: TerminalEntry[] = [
     envMatches: ['Windows_Terminal'],
     platforms: ['win32'],
     verifyBinary: 'wt.exe',
-    open: (cmd) => openViaCli('windows-terminal', ['wt.exe', '-d', '.', 'cmd', '/K', cmd]),
+    open: (cmd) => openViaCli('windows-terminal', ['wt.exe', '-d', '.', 'cmd', '/K', cmd], cmd),
   },
 ];
 
@@ -196,8 +196,8 @@ function openSystemDefault(resumeCmd: string, platform: NodeJS.Platform): OpenRe
     { cmd: 'x-terminal-emulator', args: ['-e', 'bash', '-c', `${resumeCmd}; exec bash`] },
     { cmd: 'gnome-terminal', args: ['--', 'bash', '-c', `${resumeCmd}; exec bash`] },
     { cmd: 'konsole', args: ['-e', 'bash', '-c', `${resumeCmd}; exec bash`] },
-    { cmd: 'xfce4-terminal', args: ['-e', `bash -c '${resumeCmd}; exec bash'`] },
-    { cmd: 'xterm', args: ['-e', `bash -c '${resumeCmd}; exec bash'`] },
+    { cmd: 'xfce4-terminal', args: ['-e', 'bash', '-c', `${resumeCmd}; exec bash`] },
+    { cmd: 'xterm', args: ['-e', 'bash', '-c', `${resumeCmd}; exec bash`] },
   ];
   for (const t of linuxFallbacks) {
     if (verifyBinaryExists(t.cmd)) {
