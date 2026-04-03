@@ -154,7 +154,7 @@ export default function RoomHeader() {
             className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1 rounded hover:bg-gray-800"
             title={`Click to open in terminal | Right-click to copy: ${session.resumeCommand}`}
           >
-            Resume Cmd
+            Open in Terminal
           </button>
         )}
         <button
