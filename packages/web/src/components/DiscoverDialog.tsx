@@ -113,7 +113,7 @@ export default function DiscoverDialog({ onClose }: Props) {
                 </button>
                 {adapterNames.map((name) => {
                   const count = discoveredSessions.filter((s) => s.adapterName === name).length;
-                  const label = name === 'claude-code' ? 'CC' : name === 'codex-cli' ? 'CX' : name === 'opencode' ? 'OC' : name;
+                  const label = name === 'claude-code' ? 'CC' : name === 'codex-cli' ? 'CX' : name === 'opencode' ? 'OC' : name === 'gsd' ? 'GSD' : name;
                   return (
                     <button
                       key={name}
@@ -158,7 +158,7 @@ export default function DiscoverDialog({ onClose }: Props) {
                   onChange={toggleAll}
                   className="rounded border-gray-500"
                 />
-                Select all {adapterFilter !== 'all' ? `(${adapterFilter === 'claude-code' ? 'CC' : adapterFilter === 'codex-cli' ? 'CX' : adapterFilter})` : ''}
+                Select all {adapterFilter !== 'all' ? `(${adapterFilter === 'claude-code' ? 'CC' : adapterFilter === 'codex-cli' ? 'CX' : adapterFilter === 'opencode' ? 'OC' : adapterFilter === 'gsd' ? 'GSD' : adapterFilter})` : ''}
               </label>
 
               {filteredSessions.map((session) => {

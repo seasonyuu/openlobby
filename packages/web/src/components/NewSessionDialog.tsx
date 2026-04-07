@@ -8,12 +8,12 @@ interface Props {
 
 export default function NewSessionDialog({ onClose }: Props) {
   const serverConfig = useLobbyStore((s) => s.serverConfig);
-  const defaultAdapter = (serverConfig.defaultAdapter ?? 'claude-code') as 'claude-code' | 'codex-cli' | 'opencode';
+  const defaultAdapter = (serverConfig.defaultAdapter ?? 'claude-code') as 'claude-code' | 'codex-cli' | 'opencode' | 'gsd';
   const defaultMessageMode = serverConfig.defaultMessageMode ?? 'msg-tidy';
   const adapterMeta = useLobbyStore((s) => s.adapterPermissionMeta);
   const adapterDefaults = useLobbyStore((s) => s.adapterDefaults);
 
-  const [adapter, setAdapter] = useState<'claude-code' | 'codex-cli' | 'opencode'>(defaultAdapter);
+  const [adapter, setAdapter] = useState<'claude-code' | 'codex-cli' | 'opencode' | 'gsd'>(defaultAdapter);
   const [name, setName] = useState('');
   const [cwd, setCwd] = useState('');
   const [model, setModel] = useState('');
@@ -89,6 +89,17 @@ export default function NewSessionDialog({ onClose }: Props) {
               >
                 OpenCode
               </button>
+              <button
+                type="button"
+                onClick={() => setAdapter('gsd')}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm text-center transition-colors ${
+                  adapter === 'gsd'
+                    ? 'bg-amber-900/40 border border-amber-500/50 text-amber-200'
+                    : 'bg-gray-800 text-gray-400 hover:text-gray-300 border border-transparent'
+                }`}
+              >
+                GSD
+              </button>
             </div>
           </div>
 
@@ -129,7 +140,7 @@ export default function NewSessionDialog({ onClose }: Props) {
             <textarea
               value={initialPrompt}
               onChange={(e) => setInitialPrompt(e.target.value)}
-              placeholder={adapter === 'codex-cli' ? 'What would you like Codex to do?' : adapter === 'opencode' ? 'What would you like OpenCode to do?' : 'What would you like Claude to do?'}
+              placeholder={adapter === 'codex-cli' ? 'What would you like Codex to do?' : adapter === 'opencode' ? 'What would you like OpenCode to do?' : adapter === 'gsd' ? 'What would you like GSD to do?' : 'What would you like Claude to do?'}
               rows={2}
               className="w-full bg-gray-800 text-gray-100 rounded-lg px-4 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-500"
             />
@@ -144,7 +155,7 @@ export default function NewSessionDialog({ onClose }: Props) {
               type="text"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder={adapter === 'codex-cli' ? 'e.g. o3, o4-mini, codex-mini' : adapter === 'opencode' ? 'e.g. claude-4-sonnet, gpt-4o' : 'e.g. opus, sonnet'}
+              placeholder={adapter === 'codex-cli' ? 'e.g. o3, o4-mini, codex-mini' : adapter === 'opencode' ? 'e.g. claude-4-sonnet, gpt-4o' : adapter === 'gsd' ? 'e.g. claude-4-sonnet, gpt-4o' : 'e.g. opus, sonnet'}
               className="w-full bg-gray-800 text-gray-100 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-500"
             />
           </div>

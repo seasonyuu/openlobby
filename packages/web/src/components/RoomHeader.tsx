@@ -84,7 +84,7 @@ export default function RoomHeader() {
     setShowSettings(false);
   };
 
-  const adapterLabel = session.adapterName === 'claude-code' ? 'Claude Code' : session.adapterName === 'codex-cli' ? 'Codex CLI' : session.adapterName === 'opencode' ? 'OpenCode' : session.adapterName;
+  const adapterLabel = session.adapterName === 'claude-code' ? 'Claude Code' : session.adapterName === 'codex-cli' ? 'Codex CLI' : session.adapterName === 'opencode' ? 'OpenCode' : session.adapterName === 'gsd' ? 'GSD' : session.adapterName;
 
   const effectivePermission = (() => {
     if (session.permissionMode) return session.permissionMode;
