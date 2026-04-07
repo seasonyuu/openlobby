@@ -52,6 +52,7 @@ function ensureConnection(url: string) {
     wsSend({ type: 'session.list' });
     wsSend({ type: 'config.get', key: 'defaultAdapter' });
     wsSend({ type: 'config.get', key: 'defaultMessageMode' });
+    wsSend({ type: 'config.get', key: 'defaultViewMode' });
   };
 
   ws.onclose = () => {
@@ -268,6 +269,31 @@ function ensureConnection(url: string) {
         break;
       }
 
+      case 'pty.opened':
+        if (data.sessionId) {
+          state.setPtyReady(data.sessionId, true);
+        }
+        break;
+      case 'pty.output':
+        if (data.sessionId) {
+          const listener = state.ptyOutputListeners[data.sessionId];
+          if (listener) {
+            listener((data as any).data);
+          }
+        }
+        break;
+      case 'pty.closed':
+        if (data.sessionId) {
+          state.setPtyReady(data.sessionId, false);
+        }
+        break;
+      case 'pty.error':
+        if (data.sessionId) {
+          state.setPtyReady(data.sessionId, false);
+          console.error(`[PTY] Error for session ${data.sessionId}:`, (data as any).error);
+        }
+        break;
+
       case 'error':
         console.error('[WS] Server error:', data.error);
         break;
@@ -423,6 +449,22 @@ export function wsRenameSession(sessionId: string, displayName: string): void {
 
 export function wsOpenTerminal(sessionId: string): void {
   wsSend({ type: 'session.open-terminal', sessionId });
+}
+
+export function wsOpenPty(sessionId: string, cols: number, rows: number): void {
+  wsSend({ type: 'session.open-pty', sessionId, cols, rows });
+}
+
+export function wsClosePty(sessionId: string): void {
+  wsSend({ type: 'session.close-pty', sessionId });
+}
+
+export function wsPtyInput(sessionId: string, data: string): void {
+  wsSend({ type: 'pty.input', sessionId, data });
+}
+
+export function wsPtyResize(sessionId: string, cols: number, rows: number): void {
+  wsSend({ type: 'pty.resize', sessionId, cols, rows });
 }
 
 export function wsRequestCompletions(sessionId: string): void {

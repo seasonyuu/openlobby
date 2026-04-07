@@ -148,6 +148,16 @@ interface LobbyState {
 
   terminalFailDialog: { resumeCommand: string; reason: string } | null;
   setTerminalFailDialog: (dialog: { resumeCommand: string; reason: string } | null) => void;
+
+  // Terminal mode state
+  viewModeBySession: Record<string, 'im' | 'terminal'>;
+  ptyReadyBySession: Record<string, boolean>;
+  /** Callbacks for pty.output — registered by TerminalView components */
+  ptyOutputListeners: Record<string, (data: string) => void>;
+  setViewMode: (sessionId: string, mode: 'im' | 'terminal') => void;
+  setPtyReady: (sessionId: string, ready: boolean) => void;
+  registerPtyOutputListener: (sessionId: string, listener: (data: string) => void) => void;
+  unregisterPtyOutputListener: (sessionId: string) => void;
 }
 
 // Track seen message IDs per session for deduplication
@@ -430,6 +440,27 @@ export const useLobbyStore = create<LobbyState>((set) => ({
 
   terminalFailDialog: null,
   setTerminalFailDialog: (dialog) => set({ terminalFailDialog: dialog }),
+
+  viewModeBySession: {},
+  ptyReadyBySession: {},
+  ptyOutputListeners: {},
+  setViewMode: (sessionId, mode) =>
+    set((s) => ({
+      viewModeBySession: { ...s.viewModeBySession, [sessionId]: mode },
+    })),
+  setPtyReady: (sessionId, ready) =>
+    set((s) => ({
+      ptyReadyBySession: { ...s.ptyReadyBySession, [sessionId]: ready },
+    })),
+  registerPtyOutputListener: (sessionId, listener) =>
+    set((s) => ({
+      ptyOutputListeners: { ...s.ptyOutputListeners, [sessionId]: listener },
+    })),
+  unregisterPtyOutputListener: (sessionId) =>
+    set((s) => {
+      const { [sessionId]: _, ...rest } = s.ptyOutputListeners;
+      return { ptyOutputListeners: rest };
+    }),
 
   setSessionCommands: (sessionId, commands, cached) =>
     set((state) => ({
