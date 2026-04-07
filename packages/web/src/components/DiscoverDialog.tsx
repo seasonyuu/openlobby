@@ -214,7 +214,7 @@ function SessionRow({
   isSelected: boolean;
   onToggle: () => void;
 }) {
-  const adapterLabel = session.adapterName === 'claude-code' ? 'CC' : session.adapterName === 'codex-cli' ? 'CX' : session.adapterName === 'opencode' ? 'OC' : session.adapterName;
+  const adapterLabel = session.adapterName === 'claude-code' ? 'CC' : session.adapterName === 'codex-cli' ? 'CX' : session.adapterName === 'opencode' ? 'OC' : session.adapterName === 'gsd' ? 'GSD' : session.adapterName;
 
   return (
     <label
