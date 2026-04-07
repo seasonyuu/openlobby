@@ -1,9 +1,9 @@
 import type { AgentAdapter, AdapterPluginModule } from '@openlobby/core';
-import { ClaudeCodeAdapter, CodexCliAdapter, OpenCodeAdapter } from '@openlobby/core';
+import { ClaudeCodeAdapter, CodexCliAdapter, OpenCodeAdapter, GsdAdapter } from '@openlobby/core';
 
 /** Built-in adapters — always available */
 export function createBuiltinAdapters(): AgentAdapter[] {
-  return [new ClaudeCodeAdapter(), new CodexCliAdapter(), new OpenCodeAdapter()];
+  return [new ClaudeCodeAdapter(), new CodexCliAdapter(), new OpenCodeAdapter(), new GsdAdapter()];
 }
 
 /**
