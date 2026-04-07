@@ -3,6 +3,7 @@ import type { ClientMessage, ServerMessage, LobbyMessage, AdapterCommand } from 
 import type { SessionManager } from './session-manager.js';
 import type { LobbyManager } from './lobby-manager.js';
 import type { ChannelRouterImpl } from './channel-router.js';
+import type { PtyManager } from './pty-manager.js';
 import { handleSlashCommand } from './slash-commands.js';
 import { LM_WELCOME_TEXT } from './lm-welcome.js';
 import { startWeComQrFlow } from './channels/wecom-qr.js';
@@ -12,6 +13,7 @@ export function handleWebSocket(
   sessionManager: SessionManager,
   lobbyManager?: LobbyManager,
   channelRouter?: ChannelRouterImpl,
+  ptyManager?: PtyManager,
 ): void {
   const listenerId = Math.random().toString(36).slice(2);
   let activeQrAbort: AbortController | null = null;
@@ -520,6 +522,56 @@ export function handleWebSocket(
           const instructions = (data as { instructions?: string }).instructions ?? '';
           const compactCmd = '/compact' + (instructions ? ' ' + instructions : '');
           await sessionManager.sendMessage(compactSessionId, compactCmd);
+          break;
+        }
+
+        case 'session.open-pty': {
+          if (!ptyManager) {
+            send({ type: 'pty.error', sessionId: data.sessionId, error: 'PTY not available' } as any);
+            break;
+          }
+          const ptyData = data as { sessionId: string; cols: number; rows: number };
+          const ptySession = sessionManager.getSessionInfo(ptyData.sessionId);
+          if (!ptySession) {
+            send({ type: 'pty.error', sessionId: ptyData.sessionId, error: 'Session not found' } as any);
+            break;
+          }
+          const resumeCmd = ptySession.resumeCommand;
+          if (!resumeCmd) {
+            send({ type: 'pty.error', sessionId: ptyData.sessionId, error: 'No resume command available' } as any);
+            break;
+          }
+          ptyManager.open(
+            ptyData.sessionId,
+            resumeCmd,
+            ptySession.cwd,
+            ptyData.cols,
+            ptyData.rows,
+            socket,
+          );
+          break;
+        }
+
+        case 'session.close-pty': {
+          if (ptyManager) {
+            ptyManager.close(data.sessionId);
+          }
+          break;
+        }
+
+        case 'pty.input': {
+          if (ptyManager) {
+            const inputData = data as { sessionId: string; data: string };
+            ptyManager.write(inputData.sessionId, inputData.data);
+          }
+          break;
+        }
+
+        case 'pty.resize': {
+          if (ptyManager) {
+            const resizeData = data as { sessionId: string; cols: number; rows: number };
+            ptyManager.resize(resizeData.sessionId, resizeData.cols, resizeData.rows);
+          }
           break;
         }
 

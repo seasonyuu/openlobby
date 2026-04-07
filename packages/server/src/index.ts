@@ -16,6 +16,7 @@ import { startMcpApi } from './mcp-api.js';
 import { LobbyManager } from './lobby-manager.js';
 import { ChannelRouterImpl } from './channel-router.js';
 import { createProvider } from './channels/index.js';
+import { PtyManager } from './pty-manager.js';
 
 export interface ServerOptions {
   port?: number;
@@ -84,6 +85,9 @@ export async function createServer(options: ServerOptions = {}) {
   // Initialize Lobby Manager
   const lobbyManager = new LobbyManager(sessionManager, allAdapters, mcpApiPort, db);
   await lobbyManager.init();
+
+  // Initialize PTY Manager
+  const ptyManager = new PtyManager();
 
   // Initialize Channel Router and inject into MCP API
   const channelRouter = new ChannelRouterImpl(sessionManager, lobbyManager, db);
@@ -161,7 +165,7 @@ export async function createServer(options: ServerOptions = {}) {
 
   // WebSocket endpoint
   app.get('/ws', { websocket: true }, (socket) => {
-    handleWebSocket(socket, sessionManager, lobbyManager, channelRouter);
+    handleWebSocket(socket, sessionManager, lobbyManager, channelRouter, ptyManager);
   });
 
   // Serve web frontend static files if available
