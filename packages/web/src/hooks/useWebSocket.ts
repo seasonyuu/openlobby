@@ -78,6 +78,11 @@ function ensureConnection(url: string) {
           if (data.session.origin !== 'lobby-manager') {
             state.setActiveSession(data.session.id);
           }
+          // Apply default view mode from server config
+          const defaultViewMode = state.serverConfig['defaultViewMode'];
+          if (defaultViewMode === 'terminal') {
+            state.setViewMode(data.session.id, 'terminal');
+          }
         }
         break;
       case 'session.updated':
@@ -88,6 +93,11 @@ function ensureConnection(url: string) {
             if (data.session.origin !== 'lobby-manager') {
               state.setActiveSession(data.session.id);
               wsRequestSessionHistory(data.session.id);
+            }
+            // Apply default view mode from server config
+            const defaultViewMode2 = state.serverConfig['defaultViewMode'];
+            if (defaultViewMode2 === 'terminal') {
+              state.setViewMode(data.session.id, 'terminal');
             }
           } else {
             state.updateSession(data.session, data.previousId);
