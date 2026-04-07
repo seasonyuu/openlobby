@@ -83,6 +83,7 @@ class GsdProcess extends EventEmitter implements AgentProcess {
   private spawnOptions: SpawnOptions;
   private killedIntentionally = false;
   private initialized = false;
+  private commandsEmitted = false;
 
   /** Pending approval controls: requestId → { timer, resolve } */
   private pendingControls = new Map<
@@ -162,6 +163,34 @@ class GsdProcess extends EventEmitter implements AgentProcess {
       this.emit('error', err);
     });
 
+    // Wait briefly to ensure the subprocess actually starts (catches missing binary)
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(); // Subprocess is alive — proceed
+      }, 500);
+
+      const onError = (err: Error) => {
+        clearTimeout(timer);
+        cleanup();
+        reject(err);
+      };
+
+      const onExit = (code: number | null) => {
+        clearTimeout(timer);
+        cleanup();
+        reject(new Error(`gsd process exited immediately with code ${code}`));
+      };
+
+      const cleanup = () => {
+        this.childProcess?.removeListener('error', onError);
+        this.childProcess?.removeListener('exit', onExit);
+      };
+
+      this.childProcess!.on('error', onError);
+      this.childProcess!.on('exit', onExit);
+    });
+
     this.initialized = true;
     this.status = 'idle';
 
@@ -172,8 +201,8 @@ class GsdProcess extends EventEmitter implements AgentProcess {
       mode: permMode,
     }));
 
-    // Emit commands
-    this.emit('commands', GSD_COMMANDS);
+    // NOTE: commands are emitted lazily on first init_result or idle,
+    // so the caller can wire event listeners before they fire.
   }
 
   // ── Public API (AgentProcess) ──
@@ -204,7 +233,7 @@ class GsdProcess extends EventEmitter implements AgentProcess {
     this.writeJsonl(msg);
   }
 
-  respondControl(requestId: string, decision: ControlDecision): void {
+  respondControl(requestId: string, decision: ControlDecision, _payload?: Record<string, unknown>): void {
     const pending = this.pendingControls.get(requestId);
     if (!pending) {
       console.warn('[GSD] No pending control for:', requestId);
@@ -237,6 +266,7 @@ class GsdProcess extends EventEmitter implements AgentProcess {
   interrupt(): void {
     if (this.status !== 'running' && this.status !== 'awaiting_approval') return;
     console.log('[GSD] Interrupting current generation');
+    this.killedIntentionally = true;
     if (this.childProcess) {
       this.childProcess.kill('SIGINT');
     }
@@ -267,6 +297,13 @@ class GsdProcess extends EventEmitter implements AgentProcess {
     }
     this.status = 'stopped';
     this.emit('exit', 0);
+  }
+
+  /** Emit commands event once (deferred until first init_result or idle) */
+  private emitCommandsOnce(): void {
+    if (this.commandsEmitted) return;
+    this.commandsEmitted = true;
+    this.emit('commands', GSD_COMMANDS);
   }
 
   // ── JSONL transport ──
@@ -354,6 +391,7 @@ class GsdProcess extends EventEmitter implements AgentProcess {
       this.sessionId = event.session_id;
     }
     this.status = 'idle';
+    this.emitCommandsOnce();
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -542,6 +580,7 @@ class GsdProcess extends EventEmitter implements AgentProcess {
       },
     ));
 
+    this.emitCommandsOnce();
     this.emit('idle');
   }
 
