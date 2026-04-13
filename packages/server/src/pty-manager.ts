@@ -1,4 +1,4 @@
-import * as pty from 'node-pty';
+import * as pty from '@homebridge/node-pty-prebuilt-multiarch';
 import type { WebSocket } from '@fastify/websocket';
 
 export interface PtySession {
