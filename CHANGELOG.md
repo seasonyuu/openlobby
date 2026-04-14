@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.5 (2026-04-14)
+
+### Bug Fixes
+- Detect installed CLIs and build resume commands on Windows (a2d8d3f)
+- Start the dev server correctly under tsx watch (f3203f2)
+- Wait for the backend before opening web sockets in dev mode (894d9fc)
+- Avoid double-starting the bundled server (06842f6)
+
 ## v0.5.4 (2026-04-14)
 
 ### Features
