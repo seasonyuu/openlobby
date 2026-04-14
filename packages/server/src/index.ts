@@ -26,6 +26,8 @@ export interface ServerOptions {
   version?: string;
 }
 
+declare const __OPENLOBBY_NO_AUTORUN__: boolean | undefined;
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export async function createServer(options: ServerOptions = {}) {
@@ -286,6 +288,9 @@ export async function createServer(options: ServerOptions = {}) {
 // Run directly if this file is the entry point.
 // `tsx` sets `import.meta.main`, while plain Node runs still work via argv fallback.
 const isDirectRun = (() => {
+  if (typeof __OPENLOBBY_NO_AUTORUN__ !== 'undefined' && __OPENLOBBY_NO_AUTORUN__) {
+    return false;
+  }
   const meta = import.meta as ImportMeta & { main?: boolean };
   if (typeof meta.main === 'boolean') return meta.main;
   return !!process.argv[1] && (
