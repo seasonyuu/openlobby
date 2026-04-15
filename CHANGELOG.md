@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.6 (2026-04-15)
+
+### Features
+- Support auto-upgrade under pm2 and other process managers (ae37440)
+
+### Bug Fixes
+- Persist resolved permissionMode so Codex sessions survive restart (2e97d13)
+
 ## v0.5.5 (2026-04-14)
 
 ### Bug Fixes
